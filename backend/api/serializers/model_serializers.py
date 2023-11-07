@@ -2229,6 +2229,7 @@ class InvoiceListFilterSerializer(serializers.Serializer):
         queryset=Customer.objects.all(),
         required=False,
         help_text="A filter for invoices for a specific customer",
+        source="customer"
     )
     payment_status = serializers.MultipleChoiceField(
         choices=[INVOICE_STATUS_ENUM.UNPAID, INVOICE_STATUS_ENUM.PAID],
