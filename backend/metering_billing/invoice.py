@@ -275,7 +275,7 @@ def make_billing_record_single_line_item(
 
     if (
         billing_record.next_invoicing_date > invoice.issue_date and not draft
-    ) or billing_record.fully_billed:
+    ) or billing_record.fully_billed or billing_record.start_date > invoice.issue_date:
         return
     for component_charge_record in billing_record.component_charge_records.filter(
         fully_billed=False
