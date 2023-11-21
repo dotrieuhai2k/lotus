@@ -263,7 +263,7 @@ def now_utc_ts():
     return str(now_utc().timestamp())
 
 
-def get_granularity_ratio(metric_granularity, proration_granularity, start_date):
+def get_granularity_ratio(metric_granularity, proration_granularity, start_date=None):
     if (
         proration_granularity == METRIC_GRANULARITY.TOTAL
         or proration_granularity is None
@@ -289,8 +289,10 @@ def get_granularity_ratio(metric_granularity, proration_granularity, start_date)
             METRIC_GRANULARITY.DAY: 1,
         },
     }
-    plus_month = start_date + relativedelta(months=1)
-    days_in_month = (plus_month - start_date).days
+    days_in_month = 730 / 24
+    if start_date:
+        plus_month = start_date + relativedelta(months=1)
+        days_in_month = (plus_month - start_date).days
     granularity_dict[METRIC_GRANULARITY.MONTH] = {
         METRIC_GRANULARITY.SECOND: days_in_month * 24 * 60 * 60,
         METRIC_GRANULARITY.MINUTE: days_in_month * 24 * 60,
@@ -298,8 +300,10 @@ def get_granularity_ratio(metric_granularity, proration_granularity, start_date)
         METRIC_GRANULARITY.DAY: days_in_month,
         METRIC_GRANULARITY.MONTH: 1,
     }
-    plus_quarter = start_date + relativedelta(months=3)
-    days_in_quarter = (plus_quarter - start_date).days
+    days_in_quarter = 730 / 8
+    if start_date:
+        plus_quarter = start_date + relativedelta(months=3)
+        days_in_quarter = (plus_quarter - start_date).days
     granularity_dict[METRIC_GRANULARITY.QUARTER] = {
         METRIC_GRANULARITY.SECOND: days_in_quarter * 24 * 60 * 60,
         METRIC_GRANULARITY.MINUTE: days_in_quarter * 24 * 60,
@@ -308,8 +312,10 @@ def get_granularity_ratio(metric_granularity, proration_granularity, start_date)
         METRIC_GRANULARITY.MONTH: 3,
         METRIC_GRANULARITY.QUARTER: 1,
     }
-    plus_year = start_date + relativedelta(years=1)
-    days_in_year = (plus_year - start_date).days
+    days_in_year = 365
+    if start_date:
+        plus_year = start_date + relativedelta(years=1)
+        days_in_year = (plus_year - start_date).days
     granularity_dict[METRIC_GRANULARITY.YEAR] = {
         METRIC_GRANULARITY.SECOND: days_in_year * 24 * 60 * 60,
         METRIC_GRANULARITY.MINUTE: days_in_year * 24 * 60,
