@@ -474,7 +474,7 @@ def apply_plan_discounts(invoice):
                     InvoiceLineItemAdjustment.objects.create(
                         invoice_line_item=line_item,
                         adjustment_type=InvoiceLineItemAdjustment.AdjustmentType.PLAN_ADJUSTMENT,
-                        amount=discount_amount,
+                        amount=discount_amount - line_item.base,
                         account=21000,
                         organization=invoice.organization,
                     )
