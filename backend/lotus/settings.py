@@ -43,13 +43,14 @@ except Exception:
     pass
 
 VITE_API_URL = config("VITE_API_URL", default="http://localhost:8000")
-DOCKERIZED = config("DOCKERIZED", default=False, cast=bool)
 DEBUG = config("DEBUG", default=False, cast=bool)
 PROFILER_ENABLED = config("PROFILER_ENABLED", default=False, cast=bool)
 SECRET_KEY = config("SECRET_KEY", default="")
 if SECRET_KEY == "":
     SECRET_KEY = os.urandom(32)
     logger.info("SECRET_KEY not set. Defaulting to a random one.")
+POSTGRES_HOST = config("POSTGRES_HOST", default="localhost")
+POSTGRES_PORT = config("POSTGRES_PORT", default="5432")
 POSTGRES_DB = config("POSTGRES_DB", default="lotus")
 POSTGRES_USER = config("POSTGRES_USER", default="lotus")
 POSTGRES_PASSWORD = config("POSTGRES_PASSWORD", default="lotus")
@@ -103,6 +104,7 @@ BRAINTREE_WEBHOOK_SECRET = config("BRAINTREE_WEBHOOK_SECRET", default="")
 # taxjar
 TAXJAR_API_KEY = config("TAXJAR_API_KEY", default=None)
 # Webhooks for Svix
+SVIX_SERVER = config("SVIX_SERVER", default="http://svix-server:8071")
 SVIX_API_KEY = config("SVIX_API_KEY", default="")
 SVIX_JWT_SECRET = config("SVIX_JWT_SECRET", default="")
 # Optional Observalility Services
@@ -282,8 +284,8 @@ else:
             "NAME": POSTGRES_DB,
             "USER": POSTGRES_USER,
             "PASSWORD": POSTGRES_PASSWORD,
-            "HOST": "db" if DOCKERIZED else "localhost",
-            "PORT": 5432,
+            "HOST": POSTGRES_HOST,
+            "PORT": POSTGRES_PORT,
         }
     }
 
@@ -372,7 +374,7 @@ if KAFKA_HOST and USE_KAFKA:
     ADMIN_CLIENT = KafkaAdminClient(**admin_client_config)
 
     existing_topics = ADMIN_CLIENT.list_topics()
-    if KAFKA_EVENTS_TOPIC not in existing_topics and DOCKERIZED:
+    if KAFKA_EVENTS_TOPIC not in existing_topics:
         try:
             ADMIN_CLIENT.create_topics(
                 new_topics=[
@@ -385,7 +387,7 @@ if KAFKA_HOST and USE_KAFKA:
             )
         except TopicAlreadyExistsError:
             pass
-    if KAFKA_INVOICE_TOPIC not in existing_topics and DOCKERIZED:
+    if KAFKA_INVOICE_TOPIC not in existing_topics:
         try:
             ADMIN_CLIENT.create_topics(
                 new_topics=[
@@ -398,7 +400,7 @@ if KAFKA_HOST and USE_KAFKA:
             )
         except TopicAlreadyExistsError:
             pass
-    if KAFKA_PAYMENT_TOPIC not in existing_topics and DOCKERIZED:
+    if KAFKA_PAYMENT_TOPIC not in existing_topics:
         try:
             ADMIN_CLIENT.create_topics(
                 new_topics=[
@@ -422,8 +424,6 @@ if os.environ.get("REDIS_URL"):
         if os.environ.get("REDIS_TLS_URL")
         else os.environ.get("REDIS_URL")
     )
-elif DOCKERIZED:
-    REDIS_URL = "redis://redis:6379"
 else:
     REDIS_URL = None
 
@@ -513,22 +513,6 @@ LOGGING = {
 
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/4.0/howto/static-files/
-
-INTERNAL_IPS = ["127.0.0.1"]
-if DOCKERIZED:
-    import socket
-
-    hostname, _, ips = socket.gethostbyname_ex(socket.gethostname())
-    INTERNAL_IPS += [".".join(ip.split(".")[:-1] + ["1"]) for ip in ips]
-    try:
-        _, _, ips = socket.gethostbyname_ex("frontend")
-        INTERNAL_IPS.extend(ips)
-    except socket.gaierror:
-        logger.error(
-            "tried to get frontend container ip but failed, current internal ips:",
-            INTERNAL_IPS,
-        )
-        pass
 
 VITE_APP_DIR = BASE_DIR / "src"
 
@@ -729,8 +713,7 @@ if USE_WEBHOOKS:
             }
             encoded = jwt.encode(payload, SVIX_JWT_SECRET, algorithm="HS256")
             SVIX_API_KEY = encoded
-            hostname, _, ips = socket.gethostbyname_ex("svix-server")
-            svix = Svix(SVIX_API_KEY, SvixOptions(server_url=f"http://{ips[0]}:8071"))
+            svix = Svix(SVIX_API_KEY, SvixOptions(server_url=f"{SVIX_SERVER}"))
         except Exception:
             logger.error("Error creating svix connector")
             svix = None

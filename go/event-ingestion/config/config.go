@@ -22,7 +22,6 @@ func GetConfig() Config {
 	v := viper.New()
 
 	v.SetDefault("port", 7998)
-	v.SetDefault("dockerized", "true")
 
 	// Kafka defaults
 	v.SetDefault("kafka_url", "localhost:9092")
@@ -36,9 +35,10 @@ func GetConfig() Config {
 	v.SetDefault("postgres_db", "lotus")
 
 	v.BindEnv("database_url", "DATABASE_URL")
-	v.BindEnv("dockerized", "DOCKERIZED")
 	v.BindEnv("postgres_user", "POSTGRES_USER")
 	v.BindEnv("postgres_password", "POSTGRES_PASSWORD")
+	v.BindEnv("postgres_port", "POSTGRES_PORT")
+	v.BindEnv("postgres_host", "POSTGRES_HOST")
 	v.BindEnv("postgres_db", "POSTGRES_DB")
 	v.BindEnv("port", "PORT")
 	v.BindEnv("kafka_url", "KAFKA_URL")

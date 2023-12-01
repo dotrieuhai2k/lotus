@@ -113,12 +113,6 @@ func main() {
 	// Setup postgres connection
 	var dbURL string
 	if dbURL = os.Getenv("DATABASE_URL"); dbURL == "" {
-		host := "localhost"
-		dockerized := strings.ToLower(os.Getenv("DOCKERIZED"))
-		if !(dockerized == "false" || dockerized == "0" || dockerized == "no" || dockerized == "f" || dockerized == "") {
-			host = "db"
-		}
-
 		pgUser := os.Getenv("POSTGRES_USER")
 		if pgUser == "" {
 			pgUser = "lotus"
@@ -128,12 +122,23 @@ func main() {
 		if pgPassword == "" {
 			pgPassword = "lotus"
 		}
+
+		pgHost := os.Getenv("POSTGRES_HOST")
+		if pgHost == "" {
+			pgHost = "localhost"
+		}
+
+		pgPort := os.Getenv("POSTGRES_PORT")
+		if pgHost == "" {
+			pgHost = 5432
+		}
+
 		pgDB := os.Getenv("POSTGRES_DB")
 		if pgDB == "" {
 			pgDB = "lotus"
 		}
 
-		dbURL = fmt.Sprintf("postgres://%s:%s@%s:5432/%s?sslmode=disable", pgUser, pgPassword, host, pgDB)
+		dbURL = fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable", pgUser, pgPassword, pgHost, pgPort, pgDB)
 	}
 	log.Printf("Connecting to database: %s", dbURL)
 	db, err := sql.Open("postgres", dbURL)
