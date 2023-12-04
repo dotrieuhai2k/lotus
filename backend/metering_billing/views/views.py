@@ -51,7 +51,7 @@ POSTHOG_PERSON = settings.POSTHOG_PERSON
 
 
 class PeriodMetricRevenueView(APIView):
-    permission_classes = [IsAuthenticated | ValidOrganization]
+    permission_classes = [IsAuthenticated, ValidOrganization]
 
     @extend_schema(
         parameters=[SinglePeriodRequestSerializer],
@@ -116,7 +116,7 @@ class PeriodMetricRevenueView(APIView):
 
 
 class PeriodEventsView(APIView):
-    permission_classes = [IsAuthenticated | ValidOrganization]
+    permission_classes = [IsAuthenticated, ValidOrganization]
 
     @extend_schema(
         parameters=[PeriodComparisonRequestSerializer],
@@ -161,7 +161,7 @@ class PeriodEventsView(APIView):
 
 
 class PeriodSubscriptionsView(APIView):
-    permission_classes = [IsAuthenticated | ValidOrganization]
+    permission_classes = [IsAuthenticated, ValidOrganization]
 
     @extend_schema(
         parameters=[PeriodComparisonRequestSerializer],
@@ -219,7 +219,7 @@ class PeriodSubscriptionsView(APIView):
 
 
 class PeriodMetricUsageView(APIView):
-    permission_classes = [IsAuthenticated | ValidOrganization]
+    permission_classes = [IsAuthenticated, ValidOrganization]
 
     @extend_schema(
         request=PeriodMetricUsageRequestSerializer,
@@ -271,7 +271,7 @@ class PeriodMetricUsageView(APIView):
 
 
 class SettingsView(APIView):
-    permission_classes = [IsAuthenticated | ValidOrganization]
+    permission_classes = [IsAuthenticated, ValidOrganization]
 
     def get(self, request, format=None):
         """
@@ -284,7 +284,7 @@ class SettingsView(APIView):
 
 
 class ChangeUserOrganizationView(APIView):
-    permission_classes = [IsAuthenticated | ValidOrganization]
+    permission_classes = [IsAuthenticated, ValidOrganization]
 
     @extend_schema(
         request=inline_serializer(
@@ -342,7 +342,7 @@ class TimezonesView(APIView):
 
 
 class ImportCustomersView(APIView):
-    permission_classes = [IsAuthenticated | ValidOrganization]
+    permission_classes = [IsAuthenticated, ValidOrganization]
 
     @extend_schema(
         request=inline_serializer(
@@ -388,7 +388,7 @@ class ImportCustomersView(APIView):
 
 
 class ImportPaymentObjectsView(APIView):
-    permission_classes = [IsAuthenticated | ValidOrganization]
+    permission_classes = [IsAuthenticated, ValidOrganization]
 
     @extend_schema(
         request=inline_serializer(
@@ -435,7 +435,7 @@ class ImportPaymentObjectsView(APIView):
 
 
 class StripeSubscriptionsView(viewsets.GenericViewSet, mixins.RetrieveModelMixin):
-    permission_classes = [IsAuthenticated | ValidOrganization]
+    permission_classes = [IsAuthenticated, ValidOrganization]
 
     @extend_schema(
         request=StripeMultiSubscriptionsSerializer,
@@ -523,7 +523,7 @@ class StripeSubscriptionsView(viewsets.GenericViewSet, mixins.RetrieveModelMixin
 
 
 class ImportSubscriptionsView(APIView):
-    permission_classes = [IsAuthenticated | ValidOrganization]
+    permission_classes = [IsAuthenticated, ValidOrganization]
 
     @extend_schema(
         request=inline_serializer(
@@ -569,7 +569,7 @@ class ImportSubscriptionsView(APIView):
 
 
 class TransferSubscriptionsView(APIView):
-    permission_classes = [IsAuthenticated | ValidOrganization]
+    permission_classes = [IsAuthenticated, ValidOrganization]
 
     @extend_schema(
         request=inline_serializer(
@@ -617,7 +617,7 @@ class TransferSubscriptionsView(APIView):
 
 
 class PlansByNumCustomersView(APIView):
-    permission_classes = [IsAuthenticated | ValidOrganization]
+    permission_classes = [IsAuthenticated, ValidOrganization]
 
     @extend_schema(
         request=inline_serializer(
@@ -669,7 +669,7 @@ class PlansByNumCustomersView(APIView):
 
 
 class NetsuiteInvoiceCSVView(APIView):
-    permission_classes = [IsAuthenticated | ValidOrganization]
+    permission_classes = [IsAuthenticated, ValidOrganization]
 
     @extend_schema(
         request=OptionalPeriodRequestSerializer,
@@ -691,7 +691,7 @@ class NetsuiteInvoiceCSVView(APIView):
 
 
 class NetsuiteCustomerCSVView(APIView):
-    permission_classes = [IsAuthenticated | ValidOrganization]
+    permission_classes = [IsAuthenticated, ValidOrganization]
 
     @extend_schema(
         request=OptionalPeriodRequestSerializer,
