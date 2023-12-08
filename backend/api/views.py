@@ -870,7 +870,7 @@ class SubscriptionViewSet(
         context["organization"] = organization
         if self.action in ["list", "edit", "cancel_multi"]:
             subscription_filters = self.request.query_params.getlist(
-                "subscription_filters[]"
+                "subscription_filters"
             )
             subscription_filters = [json.loads(x) for x in subscription_filters]
             dict_params = self.request.query_params.dict()
@@ -889,8 +889,12 @@ class SubscriptionViewSet(
                     data=data, context=context
                 )
             elif self.action == "list":
+                dict_params.update({
+                    "subscription_filters": subscription_filters,
+                    "status": self.request.query_params.getlist("status"),
+                })
                 serializer = ListSubscriptionRecordFilter(
-                    data=self.request.query_params, context=context
+                    data=dict_params, context=context
                 )
             else:
                 raise Exception("Invalid action")
