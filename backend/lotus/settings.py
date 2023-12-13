@@ -118,6 +118,16 @@ VESSEL_API_KEY = config("VESSEL_API_KEY", default=None)
 # Partial startup
 USE_WEBHOOKS = not config("NO_WEBHOOKS", default=False, cast=bool)
 USE_KAFKA = not config("NO_EVENTS", default=False, cast=bool)
+# Redis configurations
+REDIS_USE_SENTINEL = config("REDIS_USE_SENTINEL", default=False, cast=bool)
+REDIS_SENTINEL_ENABLE_AUTHENTICATION = config("REDIS_SENTINEL_ENABLE_AUTHENTICATION", default=False, cast=bool)
+REDIS_SENTINEL_PASSWORD = config("REDIS_SENTINEL_PASSWORD", default="password")
+# Sentinel configurations
+REDIS_SENTINEL_SERVICE = config("REDIS_SENTINEL_SERVICE", default="master")
+REDIS_SENTINELS = [sentinel.split(':') for sentinel in config('REDIS_SENTINELS', cast=lambda v: [s.strip() for s in v.split(',')])]
+# Caches
+# https://docs.djangoproject.com/en/4.0/topics/cache/
+CACHING_REDIS_DATABASE = config("CACHING_REDIS_DATABASE", default=0)
 
 if SENTRY_DSN != "":
     if not DEBUG:
@@ -428,21 +438,33 @@ else:
     REDIS_URL = None
 
 # Celery Settings
-CELERY_BROKER_URL = f"{REDIS_URL}/0"
-CELERY_RESULT_BACKEND = f"{REDIS_URL}/0"
+if REDIS_SENTINEL_ENABLE_AUTHENTICATION:
+    assert REDIS_SENTINEL_PASSWORD, 'Must set REDIS_SENTINEL_PASSWORD when enable redis sentinel authentication'
+if REDIS_USE_SENTINEL:
+    CELERY_BROKER_URL = ';'.join(f'sentinel://{host}:{port}/{CACHING_REDIS_DATABASE}' for host, port in REDIS_SENTINELS)
+    CELERY_BROKER_TRANSPORT_OPTIONS = {
+        'master_name': REDIS_SENTINEL_SERVICE,
+        'visibility_timeout': 4500,
+    }
+    if REDIS_SENTINEL_ENABLE_AUTHENTICATION:
+        CELERY_BROKER_TRANSPORT_OPTIONS['sentinel_kwargs'] = {'password': REDIS_SENTINEL_PASSWORD}
+else:
+    CELERY_BROKER_URL = f"{REDIS_URL}/{CACHING_REDIS_DATABASE}"
+CELERY_RESULT_BACKEND = CELERY_BROKER_URL
+CELERY_RESULT_BACKEND_TRANSPORT_OPTIONS = CELERY_BROKER_TRANSPORT_OPTIONS
 CELERY_ACCEPT_CONTENT = ["application/json"]
-CELERY_TASK_SERIALIZER = "json"
-CELERY_RESULT_SERIALIZER = "json"
-CELERY_TIMEZONE = "UTC"
+CELERY_TASK_TIME_LIMIT = 300
+CELERY_TASK_SOFT_TIME_LIMIT = 240
+CELERY_WORKER_CONCURRENCY = 30
 
-if REDIS_URL is not None:
+if not REDIS_USE_SENTINEL and REDIS_URL is not None:
     CACHES = {
         "default": {
             "BACKEND": "lotus.cache_utils.FallbackCache",
         },
         "main_cache": {
             "BACKEND": "django_redis.cache.RedisCache",
-            "LOCATION": f"{REDIS_URL}/0",
+            "LOCATION": f"{REDIS_URL}/{CACHING_REDIS_DATABASE}",
             "OPTIONS": {
                 "CLIENT_CLASS": "django_redis.client.DefaultClient",
             },
@@ -452,6 +474,20 @@ if REDIS_URL is not None:
             "LOCATION": "unique-snowflake",
         },
     }
+elif REDIS_USE_SENTINEL:
+    DJANGO_REDIS_CONNECTION_FACTORY = 'django_redis.pool.SentinelConnectionFactory'
+    CACHES = {
+        'default': {
+            'BACKEND': 'django_redis.cache.RedisCache',
+            'LOCATION': f'redis://{REDIS_SENTINEL_SERVICE}/{CACHING_REDIS_DATABASE}',
+            'OPTIONS': {
+                'CLIENT_CLASS': 'django_redis.client.SentinelClient',
+                'SENTINELS': REDIS_SENTINELS,
+            }
+        }
+    }
+    if REDIS_SENTINEL_ENABLE_AUTHENTICATION:
+        CACHES['default']['OPTIONS']['SENTINEL_KWARGS'] = {'password': REDIS_SENTINEL_PASSWORD}
 else:
     CACHES = {
         "default": {
