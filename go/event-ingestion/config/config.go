@@ -7,13 +7,19 @@ import (
 )
 
 type Config struct {
-	DatabaseURL       string
-	Port              uint
-	KafkaURL          string
-	KafkaTopic        string
-	KafkaSASLUsername string
-	KafkaSASLPassword string
-	RedisURL          string
+	DatabaseURL                       string
+	Port                              uint
+	KafkaURL                          []string
+	KafkaTopic                        string
+	KafkaSASLUsername                 string
+	KafkaSASLPassword                 string
+	RedisURL                          string
+	RedisMaster                       string
+	RedisSentinels                    []string
+	RedisUseSentinel                  bool
+	RedisSentinelEnableAuthentication bool
+	RedisSentinelPassword             string
+	RedisCachingDatabase              int
 }
 
 var Conf Config
@@ -34,6 +40,12 @@ func GetConfig() Config {
 	v.SetDefault("postgres_password", "lotus")
 	v.SetDefault("postgres_db", "lotus")
 
+	// Redis defaults
+	v.SetDefault("redis_use_sentinel", false)
+	v.SetDefault("redis_sentinel_enable_authentication", false)
+	v.SetDefault("redis_sentinel_password", "password")
+	v.SetDefault("redis_caching_database", 0)
+
 	v.BindEnv("database_url", "DATABASE_URL")
 	v.BindEnv("postgres_user", "POSTGRES_USER")
 	v.BindEnv("postgres_password", "POSTGRES_PASSWORD")
@@ -46,15 +58,27 @@ func GetConfig() Config {
 	v.BindEnv("kafka_sasl_username", "KAFKA_SASL_USERNAME")
 	v.BindEnv("kafka_sasl_password", "KAFKA_SASL_PASSWORD")
 	v.BindEnv("redis_url", "REDIS_TLS_URL", "REDIS_URL")
+	v.BindEnv("redis_use_sentinel", "REDIS_USE_SENTINEL")
+	v.BindEnv("redis_sentinel_service", "REDIS_SENTINEL_SERVICE")
+	v.BindEnv("redis_sentinels", "REDIS_SENTINELS")
+	v.BindEnv("redis_sentinel_enable_authentication", "REDIS_SENTINEL_ENABLE_AUTHENTICATION")
+	v.BindEnv("redis_sentinel_password", "REDIS_SENTINEL_PASSWORD")
+	v.BindEnv("redis_caching_database", "CACHING_REDIS_DATABASE")
 
 	conf := Config{
-		DatabaseURL:       GetDatabaseURL(v),
-		Port:              v.GetUint("port"),
-		KafkaURL:          v.GetString("kafka_url"),
-		KafkaTopic:        v.GetString("kafka_topic"),
-		KafkaSASLUsername: v.GetString("kafka_sasl_username"),
-		KafkaSASLPassword: v.GetString("kafka_sasl_password"),
-		RedisURL:          GetRedisURL(v),
+		DatabaseURL:                       GetDatabaseURL(v),
+		Port:                              v.GetUint("port"),
+		KafkaURL:                          GetKafkaCluster(v),
+		KafkaTopic:                        v.GetString("kafka_topic"),
+		KafkaSASLUsername:                 v.GetString("kafka_sasl_username"),
+		KafkaSASLPassword:                 v.GetString("kafka_sasl_password"),
+		RedisURL:                          GetRedisURL(v),
+		RedisUseSentinel:                  v.GetBool("redis_use_sentinel"),
+		RedisMaster:                       v.GetString("redis_sentinel_service"),
+		RedisSentinels:                    GetRedisSentinels(v),
+		RedisSentinelEnableAuthentication: v.GetBool("redis_sentinel_enable_authentication"),
+		RedisSentinelPassword:             v.GetString("redis_sentinel_password"),
+		RedisCachingDatabase:              v.GetInt("redis_caching_database"),
 	}
 	fmt.Printf("Config: %+v", conf)
 

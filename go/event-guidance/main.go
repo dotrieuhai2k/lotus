@@ -67,7 +67,7 @@ func main() {
 	log.SetOutput(os.Stdout)
 	fmt.Printf("Starting event-guidance\n")
 
-	// setup kafkda envs
+	// setup kafka envs
 	var kafkaURL string
 	if kafkaURL = os.Getenv("KAFKA_URL"); kafkaURL == "" {
 		kafkaURL = "localhost:9092"
@@ -79,7 +79,7 @@ func main() {
 	}
 	saslUsername := os.Getenv("KAFKA_SASL_USERNAME")
 	saslPassword := os.Getenv("KAFKA_SASL_PASSWORD")
-	seeds := []string{kafkaURL}
+	seeds := strings.Fields(kafkaURL)
 	ctx := context.Background()
 
 	// Setup kafka consumer
@@ -129,8 +129,8 @@ func main() {
 		}
 
 		pgPort := os.Getenv("POSTGRES_PORT")
-		if pgHost == "" {
-			pgHost = 5432
+		if pgPort == "" {
+			pgPort = "5432"
 		}
 
 		pgDB := os.Getenv("POSTGRES_DB")
@@ -138,7 +138,7 @@ func main() {
 			pgDB = "lotus"
 		}
 
-		dbURL = fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable", pgUser, pgPassword, pgHost, pgPort, pgDB)
+		dbURL = fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable", pgUser, pgPassword, pgHost, pgPort, pgDB)
 	}
 	log.Printf("Connecting to database: %s", dbURL)
 	db, err := sql.Open("postgres", dbURL)

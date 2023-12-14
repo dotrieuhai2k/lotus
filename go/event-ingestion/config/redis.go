@@ -1,9 +1,8 @@
 package config
 
 import (
-	"strings"
-
 	"github.com/spf13/viper"
+	"strings"
 )
 
 func GetRedisURL(v *viper.Viper) string {
@@ -11,4 +10,7 @@ func GetRedisURL(v *viper.Viper) string {
 		return v.GetString("redis_url")
 	}
 	return "redis://localhost:6379"
+}
+func GetRedisSentinels(v *viper.Viper) []string {
+	return strings.Split(v.GetString("redis_sentinels"), ",")
 }
