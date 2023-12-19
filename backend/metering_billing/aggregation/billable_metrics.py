@@ -1245,7 +1245,7 @@ class GaugeHandler(MetricHandler):
             date = convert_to_date(row.time)
             if date not in results_dict:
                 results_dict[date] = Decimal(0)
-            results_dict[date] += row.usage_qty or Decimal(0)
+            results_dict[date] += Decimal(str(row.usage_qty)) or Decimal(0)
         return results_dict
 
     @staticmethod
