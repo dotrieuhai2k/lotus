@@ -305,8 +305,8 @@ def make_billing_record_single_line_item(
     rev = usg_rev["revenue"]
     amt_already_invoiced = billing_record.amt_already_invoiced()
     qty_already_invoiced = billing_record.qty_already_invoiced()
-    net_qty = qty or 0 - qty_already_invoiced
-    net_rev = rev or 0 - amt_already_invoiced
+    net_qty = (qty or 0) - qty_already_invoiced
+    net_rev = (rev or 0) - amt_already_invoiced
     assert (
         net_qty >= 0
     ), "net qty should be >= 0, billable quantity should never go down"
