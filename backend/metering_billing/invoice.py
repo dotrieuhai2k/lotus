@@ -354,7 +354,7 @@ def find_next_billing_plan(subscription_record):
 
 
 def check_subscription_record_renews(subscription_record, issue_date):
-    if subscription_record.end_date < issue_date:
+    if subscription_record.end_date > issue_date:
         return False
     if subscription_record.parent is None:
         return subscription_record.auto_renew
