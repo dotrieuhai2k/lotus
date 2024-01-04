@@ -95,22 +95,16 @@ def calculate_invoice_inner():
     now_minus_30 = now_utc() - relativedelta(
         minutes=30
     )  # grace period of 30 minutes for sending events
-    sub_records_to_bill = SubscriptionRecord.objects.filter(
-        Q(end_date__lt=now_minus_30)
-    )
     billing_records_to_bill = BillingRecord.objects.filter(
-        Q(next_invoicing_date__lt=now_minus_30) & Q(fully_billed=False),
+        Q(next_invoicing_date__lt=now_minus_30) | Q(subscription__end_date__lt=now_minus_30),
+        fully_billed=False,
     )
     # Get a list of distinct subscription IDs from the billing records
     subscription_id_from_br = billing_records_to_bill.values_list(
         "subscription", flat=True
     ).distinct()
-    subscription_id_from_sr = sub_records_to_bill.values_list(
-        "id", flat=True
-    ).distinct()
-    # Get the subscription records for the subscriptions
     all_sub_records = SubscriptionRecord.objects.filter(
-        Q(id__in=subscription_id_from_br) | Q(id__in=subscription_id_from_sr)
+        Q(id__in=subscription_id_from_br)
     ).prefetch_related(
         "customer",
         "organization",
