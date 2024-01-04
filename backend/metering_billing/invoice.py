@@ -394,6 +394,9 @@ def create_next_subscription_record(subscription_record, next_bp):
         component_fixed_charges_initial_units=component_fixed_charges_initial_units,
         do_generate_invoice=False,
     )
+    # Make subscription records which ended (end_date <= now) is not auto renew
+    subscription_record.auto_renew = False
+    subscription_record.save()
     return next_sr
 
 
