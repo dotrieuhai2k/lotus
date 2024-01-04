@@ -301,7 +301,7 @@ class TestGetAccess:
             metric_type=METRIC_TYPE.GAUGE,
             event_type=EVENT_TYPE.TOTAL,
         )
-        METRIC_HANDLER_MAP[metric.metric_type].create_continuous_aggregate(metric)
+        metric.provision_materialized_views()
         plan_component = PlanComponent.objects.create(
             billable_metric=metric,
             plan_version=billing_plan,
