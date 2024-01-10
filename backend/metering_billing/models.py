@@ -1725,7 +1725,7 @@ class PlanComponent(models.Model):
             unadjusted_duration_microseconds = (
                 (range_start_date + interval_delta) - range_start_date
             ).total_seconds() * 10**6
-            return [(sr_start_date, sr_end_date, unadjusted_duration_microseconds)]
+            return [(range_start_date, range_end_date, unadjusted_duration_microseconds)]
 
         reset_dates = []
 
@@ -3357,6 +3357,12 @@ class SubscriptionRecord(models.Model):
         self.end_date = now
         self.auto_renew = False
         self.save()
+
+        # Transfer subscription_filter to new subscription
+        sr.subscription_filters = self.subscription_filters
+        sr.save()
+
+        # Generate Invoice
         generate_invoice([self, sr])
         return sr
 
