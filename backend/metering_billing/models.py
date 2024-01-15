@@ -1501,15 +1501,15 @@ class PriceTier(models.Model):
         if (
             bulk_pricing_enabled
             and self.range_end is not None
-            and self.range_end <= usage
+            and self.range_end < usage
         ):
             return revenue
 
         if bulk_pricing_enabled:
-            usage_in_range = self.range_start <= usage
+            usage_in_range = self.range_start < usage
         else:
             usage_in_range = (
-                self.range_start <= usage
+                self.range_start <= usage + 1
                 if discontinuous_range
                 else self.range_start < usage or self.range_start == 0
             )
