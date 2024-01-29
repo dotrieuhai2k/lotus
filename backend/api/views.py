@@ -192,60 +192,46 @@ class CustomerViewSet(PermissionPolicyMixin, viewsets.ModelViewSet):
         organization = self.request.organization
         qs = Customer.objects.filter(organization=organization)
         qs = qs.select_related("default_currency")
-        qs = qs.prefetch_related(
-            "organization",
-            Prefetch(
-                "subscription_records",
-                queryset=SubscriptionRecord.base_objects.active(now)
-                .filter(
-                    organization=organization,
-                )
-                .select_related("customer", "billing_plan", "billing_plan__plan")
-                .prefetch_related(
-                    "addon_subscription_records",
-                    "organization",
-                ),
-                to_attr="active_subscription_records",
-            ),
-            Prefetch(
-                "invoices",
-                queryset=Invoice.objects.filter(
-                    organization=organization,
-                    payment_status__in=[
-                        Invoice.PaymentStatus.PAID,
-                        Invoice.PaymentStatus.UNPAID,
-                    ],
-                )
-                .order_by("-issue_date")
-                .select_related("currency")
-                .prefetch_related(
-                    "organization",
-                    Prefetch(
-                        "line_items",
-                        queryset=InvoiceLineItem.objects.all()
-                        .select_related(
-                            "pricing_unit",
-                            "associated_subscription_record",
-                            "associated_plan_version",
-                            "associated_billing_record",
-                        )
-                        .prefetch_related("organization"),
+        if self.action == "retrieve":
+            qs = qs.prefetch_related(
+                Prefetch(
+                    "invoices",
+                    queryset=Invoice.objects.filter(
+                        organization=organization,
+                        payment_status__in=[
+                            Invoice.PaymentStatus.PAID,
+                            Invoice.PaymentStatus.UNPAID,
+                        ],
+                    )
+                    .order_by("-issue_date")
+                    .select_related("currency")
+                    .annotate(
+                        min_date=Min("line_items__start_date"),
+                        max_date=Max("line_items__end_date"),
                     ),
-                )
-                .annotate(
-                    min_date=Min("line_items__start_date"),
-                    max_date=Max("line_items__end_date"),
+                    to_attr="active_invoices",
                 ),
-                to_attr="active_invoices",
-            ),
-        )
-        qs = qs.annotate(
-            total_amount_due=Sum(
-                "invoices__amount",
-                filter=Q(invoices__payment_status=Invoice.PaymentStatus.UNPAID),
-                output_field=DecimalField(),
             )
-        )
+        if self.action in ["summary", "retrieve"]:
+            qs = qs.prefetch_related(
+                Prefetch(
+                    "subscription_records",
+                    queryset=SubscriptionRecord.base_objects.active(now)
+                    .filter(
+                        organization=organization,
+                    )
+                    .select_related("customer", "billing_plan"),
+                    to_attr="active_subscription_records",
+                )
+            )
+        if self.action in ["totals", "retrieve"]:
+            qs = qs.annotate(
+                total_amount_due=Sum(
+                    "invoices__amount",
+                    filter=Q(invoices__payment_status=Invoice.PaymentStatus.UNPAID),
+                    output_field=DecimalField(),
+                )
+            )
         return qs
 
     def get_serializer_class(self, default=None):
