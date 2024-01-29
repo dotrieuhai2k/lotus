@@ -1517,7 +1517,7 @@ class PlanSerializer(
         many=True, help_text="The external links that this plan has."
     )
     tags = serializers.SerializerMethodField(help_text="The tags that this plan has.")
-    versions = PlanVersionSerializer(many=True, help_text="This plan's versions.")
+    versions = serializers.SerializerMethodField(help_text="This plan's versions.")
 
     # DEPRECATED
     parent_plan = serializers.SerializerMethodField(
@@ -1532,6 +1532,15 @@ class PlanSerializer(
     status = serializers.SerializerMethodField(
         help_text="[DEPRECATED] The status of this plan."
     )
+
+    def get_versions(self, obj) -> PlanVersionSerializer(many=True):
+        try:
+            return PlanVersionSerializer(obj.versions_prefetched, many=True).data
+        except AttributeError as e:
+            logger.error(f"AttributeError on plan: {e}")
+            return PlanVersionSerializer(
+                obj.versions.all().order_by("-created_on"), many=True
+            ).data
 
     def get_num_versions(self, obj) -> int:
         try:
