@@ -1564,7 +1564,7 @@ class PlanSerializer(
                     x.version
                     for x in obj.versions_prefetched
                     if not x.is_custom
-                    and x.active_from <= now
+                    and (x.active_from is not None and x.active_from <= now)
                     and (x.active_to is None or x.active_to > now)
                 ],
                 default=0,

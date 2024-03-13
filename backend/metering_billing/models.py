@@ -2434,7 +2434,7 @@ class PlanVersion(models.Model):
     def is_active(self, time=None):
         if time is None:
             time = now_utc()
-        return self.active_from <= time and (
+        return (self.active_from is not None and self.active_from <= time) and (
             self.active_to is None or self.active_to > time
         )
 
