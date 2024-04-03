@@ -3529,7 +3529,7 @@ class BillingRecord(models.Model):
         if self.next_invoicing_date < invoice_date:
             found_next = False
             for invoicing_date in sorted(self.invoicing_dates):
-                if invoicing_date > invoice_date:
+                if invoicing_date > self.next_invoicing_date:
                     self.next_invoicing_date = invoicing_date
                     self.save()
                     found_next = True

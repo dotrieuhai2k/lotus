@@ -1130,10 +1130,7 @@ class TestResetAndInvoicingIntervals:
             if br.start_date > now_utc():
                 assert br.next_invoicing_date == br.invoicing_dates[0]
             else:
-                assert br.next_invoicing_date in [
-                    br.invoicing_dates[-2],
-                    br.invoicing_dates[-1],
-                ]
+                assert br.next_invoicing_date == br.invoicing_dates[1]
             assert br.fully_billed is False
             assert br.unadjusted_duration_microseconds == 7 * 86400000000 or (
                 br.end_date == br.subscription.end_date
