@@ -1675,7 +1675,7 @@ class PlanComponent(models.Model):
 
         invoicing_dates = []
 
-        invoicing_date = start_date
+        invoicing_date = start_date - relativedelta(microseconds=1)
         while invoicing_date < end_date:
             invoicing_date += interval_delta
             append_date = min(invoicing_date, end_date)

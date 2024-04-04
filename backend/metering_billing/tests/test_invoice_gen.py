@@ -41,11 +41,12 @@ def invoice_test_common_setup(
         *,
         auth_method,
         make_plan_yearly=False,
+        make_component_hourly=False,
     ):
         setup_dict = {}
         # set up organizations and api keys
-        org, key = generate_org_and_api_key()
-        org2, key2 = generate_org_and_api_key()
+        org, key = generate_org_and_api_key("test-org")
+        org2, key2 = generate_org_and_api_key("test-org-2")
         setup_dict = {
             "org": org,
             "key": key,
@@ -75,14 +76,24 @@ def invoice_test_common_setup(
             {"num_characters": 125, "peak_bandwith": 148},
             {"num_characters": 543, "peak_bandwith": 16},
         )
-        baker.make(
-            Event,
-            organization=org,
-            event_name="email_sent",
-            time_created=now_utc() - timedelta(days=1),
-            properties=itertools.cycle(event_properties),
-            _quantity=3,
-        )
+        if make_component_hourly:
+            baker.make(
+                Event,
+                organization=org,
+                event_name="email_sent",
+                time_created=now_utc(),
+                properties={"num_characters": 350, "peak_bandwith": 65},
+                _quantity=1,
+            )
+        else:
+            baker.make(
+                Event,
+                organization=org,
+                event_name="email_sent",
+                time_created=now_utc() - timedelta(days=1),
+                properties=itertools.cycle(event_properties),
+                _quantity=3,
+            )
         metric_set = baker.make(
             Metric,
             billable_metric_name=itertools.cycle(
@@ -110,6 +121,10 @@ def invoice_test_common_setup(
                 plan_version=plan_version,
                 billable_metric=metric_set[i],
             )
+            if make_component_hourly:
+                pc.invoicing_interval_unit = PlanComponent.IntervalLengthType.HOUR
+                pc.invoicing_interval_count = 1
+                pc.save()
             start = 0
             if fmu > 0:
                 PriceTier.objects.create(
@@ -128,7 +143,7 @@ def invoice_test_common_setup(
             )
         setup_dict["billing_plan"] = plan_version
         subscription_record = add_subscription_record_to_org(
-            org, plan_version, customer, now_utc() - timedelta(days=3)
+            org, plan_version, customer, now_utc() if make_component_hourly else now_utc() - timedelta(days=3)
         )
         setup_dict["subscription_record"] = subscription_record
 
@@ -316,6 +331,48 @@ class TestGenerateInvoice:
 
         result_invoice = Invoice.objects.order_by("-invoice_number").first()
         assert result_invoice.invoice_pdf != ""
+
+    def test_generate_invoice_hourly(self, invoice_test_common_setup):
+        setup_dict = invoice_test_common_setup(
+            auth_method="api_key",
+            make_component_hourly=True,
+        )
+        Invoice.objects.all().delete()
+        for i in range(0, 15):
+            invoices_before = len(Invoice.objects.all())
+            sr_start_plus_hour = (
+                setup_dict["subscription_record"].start_date
+                + relativedelta(hours=i+1)
+                + relativedelta(minutes=30, seconds=1)
+            )
+            assert sr_start_plus_hour < setup_dict["subscription_record"].end_date
+            mock_date = sr_start_plus_hour
+            with (
+                mock.patch(
+                    "metering_billing.tasks.now_utc",
+                    return_value=mock_date,
+                ),
+                mock.patch(
+                    "metering_billing.invoice.now_utc",
+                    return_value=mock_date,
+                )
+            ):
+                calculate_invoice_inner()
+            invoices_after = len(Invoice.objects.all())
+            assert invoices_after == invoices_before + 1
+
+            invoices_hourly = Invoice.objects.all().order_by("issue_date")
+            assert invoices_hourly[i].issue_date == mock_date
+            assert invoices_hourly[i].line_items.count() == 3
+            if i == 0:
+                assert (invoices_hourly.first().line_items.first().start_date
+                        == setup_dict["subscription_record"].start_date)
+                assert (invoices_hourly.first().line_items.first().end_date
+                        == setup_dict["subscription_record"].start_date + relativedelta(hours=1, microseconds=-1))
+            else:
+                assert invoices_hourly[i].amount == invoices_hourly[i-1].amount
+                assert (invoices_hourly[i].line_items.first().start_date
+                        == invoices_hourly[i-1].line_items.first().end_date)
 
 
 @pytest.mark.django_db(transaction=True)
