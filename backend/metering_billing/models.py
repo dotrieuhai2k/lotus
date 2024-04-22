@@ -3586,10 +3586,12 @@ class BillingRecord(models.Model):
     def amt_already_invoiced(self):
         if self.recurring_charge:
             return self.line_items.filter(
+                ~Q(invoice__payment_status__in=[Invoice.PaymentStatus.VOIDED, Invoice.PaymentStatus.DRAFT]),
                 chargeable_item_type=CHARGEABLE_ITEM_TYPE.RECURRING_CHARGE
             ).aggregate(Sum("base"))["base__sum"] or Decimal(0.0)
         else:
             return self.line_items.filter(
+                ~Q(invoice__payment_status__in=[Invoice.PaymentStatus.VOIDED, Invoice.PaymentStatus.DRAFT]),
                 chargeable_item_type=CHARGEABLE_ITEM_TYPE.USAGE_CHARGE
             ).aggregate(Sum("base"))["base__sum"] or Decimal(0.0)
 
@@ -3598,6 +3600,7 @@ class BillingRecord(models.Model):
             self.recurring_charge is None
         ), "This is a recurring charge billing record, cannot use this function."
         return self.line_items.filter(
+            ~Q(invoice__payment_status__in=[Invoice.PaymentStatus.VOIDED, Invoice.PaymentStatus.DRAFT]),
             chargeable_item_type=CHARGEABLE_ITEM_TYPE.USAGE_CHARGE
         ).aggregate(Sum("quantity"))["quantity__sum"] or Decimal(0.0)
 
