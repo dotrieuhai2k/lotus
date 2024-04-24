@@ -27,7 +27,7 @@ from metering_billing.utils.enums import (
 )
 from metering_billing.webhooks import invoice_past_due_webhook
 
-logger = logging.getLogger("django.server")
+logger = logging.getLogger(__name__)
 POSTHOG_PERSON = settings.POSTHOG_PERSON
 
 
@@ -82,7 +82,9 @@ def generate_invoice_pdf_async(invoice_pk):
 
 @shared_task
 def calculate_invoice():
-    calculate_invoice_inner()
+    for _ in range(0, 100):
+        if not calculate_invoice_inner():
+            break
 
 
 def calculate_invoice_inner():
@@ -118,16 +120,19 @@ def calculate_invoice_inner():
 
     # now generate invoices and new subs
     cust_info = all_sub_records.values_list("customer", "organization").distinct()
+    generated = False
     for customer_id, organization_id in cust_info:
         customer_subscription_records = all_sub_records.filter(customer_id=customer_id)
         # Generate the invoice
         try:
-            generate_invoice(
+            invoices = generate_invoice(
                 customer_subscription_records,
+                issue_date=now_minus_30,
                 charge_next_plan=True,
                 generate_next_subscription_record=True,
             )
             now = now_utc()
+            generated |= bool(invoices)
         except Exception as e:
             logger.error(
                 "Error generating invoice for subscription records {}. Error was {}".format(
@@ -142,6 +147,8 @@ def calculate_invoice_inner():
             customer_id=customer_id,
             organization_id=organization_id,
         ).delete()
+
+    return generated
 
 
 def refresh_alerts_inner():
@@ -515,10 +522,14 @@ def import_customers_from_payment_processor_inner(payment_processor, organizatio
     from metering_billing.models import Organization
 
     organization = Organization.objects.get(pk=organization_pk)
-    connector = PAYMENT_PROCESSOR_MAP[payment_processor]
-    n = connector.import_customers(organization)
+    if payment_processor in PAYMENT_PROCESSOR_MAP:
+        connector = PAYMENT_PROCESSOR_MAP[payment_processor]
+        n = connector.import_customers(organization)
 
-    return n
+        return n
+    else:
+        return 0
+
 
 
 @shared_task
