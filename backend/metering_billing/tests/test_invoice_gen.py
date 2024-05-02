@@ -362,7 +362,7 @@ class TestGenerateInvoice:
             assert invoices_after == invoices_before + 1
 
             invoices_hourly = Invoice.objects.all().order_by("issue_date")
-            assert invoices_hourly[i].issue_date == mock_date - relativedelta(minutes=30)
+            assert invoices_hourly[i].issue_date == mock_date
             assert invoices_hourly[i].line_items.count() == 3
             if i == 0:
                 assert (invoices_hourly.first().line_items.first().start_date

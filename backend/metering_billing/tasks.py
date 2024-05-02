@@ -82,9 +82,7 @@ def generate_invoice_pdf_async(invoice_pk):
 
 @shared_task
 def calculate_invoice():
-    for _ in range(0, 100):
-        if not calculate_invoice_inner():
-            break
+    calculate_invoice_inner()
 
 
 def calculate_invoice_inner():
@@ -120,19 +118,16 @@ def calculate_invoice_inner():
 
     # now generate invoices and new subs
     cust_info = all_sub_records.values_list("customer", "organization").distinct()
-    generated = False
     for customer_id, organization_id in cust_info:
         customer_subscription_records = all_sub_records.filter(customer_id=customer_id)
         # Generate the invoice
         try:
-            invoices = generate_invoice(
+            generate_invoice(
                 customer_subscription_records,
-                issue_date=now_minus_30,
                 charge_next_plan=True,
                 generate_next_subscription_record=True,
             )
             now = now_utc()
-            generated |= bool(invoices)
         except Exception as e:
             logger.error(
                 "Error generating invoice for subscription records {}. Error was {}".format(
@@ -147,8 +142,6 @@ def calculate_invoice_inner():
             customer_id=customer_id,
             organization_id=organization_id,
         ).delete()
-
-    return generated
 
 
 def refresh_alerts_inner():
@@ -527,7 +520,7 @@ def import_customers_from_payment_processor_inner(payment_processor, organizatio
         n = connector.import_customers(organization)
 
         return n
-    else:
+    else: 
         return 0
 
 
