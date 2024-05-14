@@ -2867,11 +2867,11 @@ class SubscriptionRecord(models.Model):
             # check if stripe subscription id is null, then billing plan is not null, and vice versa
             CheckConstraint(
                 check=(
-                    Q(stripe_subscription_id__isnull=False)
+                    (Q(stripe_subscription_id__isnull=False) & ~Q(stripe_subscription_id=''))
                     & Q(billing_plan__isnull=True)
                 )
                 | (
-                    Q(stripe_subscription_id__isnull=True)
+                    (Q(stripe_subscription_id__isnull=True) | Q(stripe_subscription_id=''))
                     & Q(billing_plan__isnull=False)
                 ),
                 name="stripe_subscription_id_xor_billing_plan",
