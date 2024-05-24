@@ -380,8 +380,8 @@ class CustomerViewSet(PermissionPolicyMixin, viewsets.ModelViewSet):
             serializer.validated_data.get(key, None)
             for key in ["start_date", "end_date"]
         )
-        start_time = convert_to_datetime(start_date, date_behavior="min")
-        end_time = convert_to_datetime(end_date, date_behavior="max")
+        start_time = convert_to_datetime(start_date, date_behavior="min", tz=customer.timezone)
+        end_time = convert_to_datetime(end_date, date_behavior="max", tz=customer.timezone)
         per_day_dict = {}
         for period in dates_bwn_two_dts(start_date, end_date):
             period = convert_to_date(period)

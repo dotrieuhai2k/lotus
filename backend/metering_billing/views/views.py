@@ -237,8 +237,8 @@ class PeriodMetricUsageView(APIView):
             serializer.validated_data.get(key, None)
             for key in ["start_date", "end_date", "top_n_customers"]
         )
-        q_start = convert_to_datetime(q_start, date_behavior="min")
-        q_end = convert_to_datetime(q_end, date_behavior="max")
+        q_start = convert_to_datetime(q_start, date_behavior="min", tz=organization.timezone)
+        q_end = convert_to_datetime(q_end, date_behavior="max", tz=organization.timezone)
         final_results = {}
         metrics = organization.metrics.filter(
             ~Q(metric_type=METRIC_TYPE.CUSTOM), status=METRIC_STATUS.ACTIVE
