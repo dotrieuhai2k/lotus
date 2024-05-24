@@ -203,8 +203,6 @@ def calculate_subscription_record_flat_fees(
         else:
             billing_plan = subscription_record.billing_plan
             billing_plan_name = str(billing_plan)
-            start = billing_record.start_date
-            end = billing_record.end_date
             qty = subscription_record.quantity
             billing_type = billing_record.recurring_charge.get_charge_timing_display()
             # one case... if the invoice charge timing is in arrears, but the billing record end date is past the invoice issue date, then we need to change the charge timing to intermediate because it's not done billing yet
@@ -223,8 +221,8 @@ def calculate_subscription_record_flat_fees(
             if flat_fee_due > 0:
                 InvoiceLineItem.objects.create(
                     name=f"{billing_plan_name} Flat Fee",
-                    start_date=convert_to_datetime(start, date_behavior="min"),
-                    end_date=convert_to_datetime(end, date_behavior="max"),
+                    start_date=billing_record.start_date,
+                    end_date=billing_record.end_date,
                     quantity=qty if qty > 1 else None,
                     base=flat_fee_due,
                     billing_type=billing_type,
