@@ -21,7 +21,7 @@ from django.core.validators import (
     MinLengthValidator,
     MinValueValidator,
 )
-from django.db import connection, models
+from django.db import connection, models, transaction
 from django.db.models import Count, F, FloatField, Q, Sum
 from django.db.models.constraints import CheckConstraint, UniqueConstraint
 from django.db.models.functions import Cast, Coalesce
@@ -2614,6 +2614,7 @@ class Plan(models.Model):
     def __str__(self):
         return self.plan_name
 
+    @transaction.atomic
     def add_tags(self, tags):
         existing_tags = self.tags.all()
         existing_tag_names = [tag.tag_name.lower() for tag in existing_tags]
@@ -2632,6 +2633,7 @@ class Plan(models.Model):
                 )
                 self.tags.add(tag_obj)
 
+    @transaction.atomic
     def remove_tags(self, tags):
         existing_tags = self.tags.all()
         tags_lower = [tag["tag_name"].lower() for tag in tags]
@@ -2639,6 +2641,7 @@ class Plan(models.Model):
             if existing_tag.tag_name.lower() in tags_lower:
                 self.tags.remove(existing_tag)
 
+    @transaction.atomic
     def set_tags(self, tags):
         existing_tags = self.tags.all()
         existing_tag_names = [tag.tag_name.lower() for tag in existing_tags]

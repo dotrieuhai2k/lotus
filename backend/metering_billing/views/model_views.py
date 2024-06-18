@@ -1,10 +1,30 @@
 # import lotus_python
 import logging
 
-import api.views as api_views
 import posthog
 import sentry_sdk
 from actstream.models import Action
+from django.conf import settings
+from django.core.cache import cache
+from django.core.validators import MinValueValidator
+from django.db import transaction
+from django.db.models import Max, Func
+from django.db.utils import IntegrityError
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import (
+    OpenApiCallback,
+    OpenApiParameter,
+    extend_schema,
+    inline_serializer,
+)
+from rest_framework import mixins, serializers, status, viewsets
+from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
+from rest_framework.pagination import CursorPagination
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+
+import api.views as api_views
 from api.serializers.nonmodel_serializers import (
     AddFeatureSerializer,
     AddFeatureToAddOnSerializer,
@@ -20,21 +40,10 @@ from api.serializers.webhook_serializers import (
     SubscriptionCreatedSerializer,
     SubscriptionRenewedSerializer,
     UsageAlertTriggeredSerializer,
-)
-from django.conf import settings
-from django.core.cache import cache
-from django.core.validators import MinValueValidator
-from django.db.models import Func, Max
-from django.db.utils import IntegrityError
-from drf_spectacular.types import OpenApiTypes
-from drf_spectacular.utils import (
-    OpenApiCallback,
-    OpenApiParameter,
-    extend_schema,
-    inline_serializer,
+    SubscriptionExpiredSerializer,
+    SubscriptionUpdatedSerializer, DashboardAccessSerializer
 )
 from metering_billing.exceptions import (
-    DuplicateMetric,
     DuplicateWebhookEndpoint,
     InvalidOperation,
     ServerError,
@@ -43,10 +52,8 @@ from metering_billing.models import (
     Analysis,
     APIToken,
     Backtest,
-    Event,
     ExternalPlanLink,
     Feature,
-    Metric,
     Organization,
     Plan,
     PlanVersion,
@@ -57,6 +64,7 @@ from metering_billing.models import (
     UsageAlert,
     User,
     WebhookEndpoint,
+    Event,
 )
 from metering_billing.payment_processors import PAYMENT_PROCESSOR_MAP
 from metering_billing.permissions import ValidOrganization
@@ -79,16 +87,12 @@ from metering_billing.serializers.model_serializers import (
     APITokenSerializer,
     CustomerDetailSerializer,
     CustomerSummarySerializer,
-    CustomerUpdateSerializer,
     CustomerWithRevenueSerializer,
     EventDetailSerializer,
     ExternalPlanLinkSerializer,
     FeatureCreateSerializer,
     FeatureDetailSerializer,
     InvoiceDetailSerializer,
-    MetricCreateSerializer,
-    MetricDetailSerializer,
-    MetricUpdateSerializer,
     OrganizationCreateSerializer,
     OrganizationSerializer,
     OrganizationUpdateSerializer,
@@ -120,7 +124,6 @@ from metering_billing.serializers.serializer_utils import (
     AddOnUUIDField,
     AddOnVersionUUIDField,
     AnalysisUUIDField,
-    MetricUUIDField,
     OrganizationUUIDField,
     PlanUUIDField,
     PlanVersionUUIDField,
@@ -130,47 +133,13 @@ from metering_billing.serializers.serializer_utils import (
 from metering_billing.tasks import run_backtest
 from metering_billing.utils import make_all_decimals_floats, now_utc
 from metering_billing.utils.enums import (
-    METRIC_STATUS,
     PAYMENT_PROCESSORS,
     WEBHOOK_TRIGGER_EVENTS,
 )
-from rest_framework import mixins, serializers, status, viewsets
-from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
-from rest_framework.pagination import CursorPagination
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
 
 POSTHOG_PERSON = settings.POSTHOG_PERSON
 SVIX_CONNECTOR = settings.SVIX_CONNECTOR
-logger = logging.getLogger("django.server")
-
-
-class CustomPagination(CursorPagination):
-    def get_paginated_response(self, data):
-        if self.get_next_link():
-            next_link = self.get_next_link()
-            next_cursor = next_link[
-                next_link.index(f"{self.cursor_query_param}=")
-                + len(f"{self.cursor_query_param}=") :
-            ]
-        else:
-            next_cursor = None
-        if self.get_previous_link():
-            previous_link = self.get_previous_link()
-            previous_cursor = previous_link[
-                previous_link.index(f"{self.cursor_query_param}=")
-                + len(f"{self.cursor_query_param}=") :
-            ]
-        else:
-            previous_cursor = None
-        return Response(
-            {
-                "next": next_cursor,
-                "previous": previous_cursor,
-                "results": data,
-            }
-        )
+logger = logging.getLogger(__name__)
 
 
 class PermissionPolicyMixin:
@@ -395,6 +364,22 @@ class WebhookViewSet(PermissionPolicyMixin, viewsets.ModelViewSet):
                     responses={200: SubscriptionRenewedSerializer},
                 ),
             ),
+            OpenApiCallback(
+                WEBHOOK_TRIGGER_EVENTS.SUBSCRIPTION_EXPIRED.value,
+                "{$request.body#/webhook_url}",
+                extend_schema(
+                    description="Subscription expired webhook",
+                    responses={200: SubscriptionExpiredSerializer},
+                ),
+            ),
+            OpenApiCallback(
+                WEBHOOK_TRIGGER_EVENTS.SUBSCRIPTION_UPDATED.value,
+                "{$request.body#/webhook_url}",
+                extend_schema(
+                    description="Subscription updated webhook",
+                    responses={200: SubscriptionUpdatedSerializer},
+                ),
+            ),
         ]
     )
     def create(self, request, *args, **kwargs):
@@ -457,53 +442,40 @@ class WebhookViewSet(PermissionPolicyMixin, viewsets.ModelViewSet):
             )
         return response
 
+    @extend_schema(
+        request=None,
+        responses={200: DashboardAccessSerializer},
+    )
+    @action(detail=False, methods=["GET"], url_path="dashboard_access", url_name="dashboard_access")
+    def get_dashboard_access(self, request):
+        organization = request.user.organization
+        if SVIX_CONNECTOR is None:
+            raise serializers.ValidationError(
+                "Webhook endpoints are not supported in this environment"
+            )
+        dashboard_access_out = SVIX_CONNECTOR.authentication.dashboard_access(organization.organization_id.hex)
 
-class CursorSetPagination(CustomPagination):
-    page_size = 10
-    page_size_query_param = "page_size"
-    ordering = "-time_created"
-    cursor_query_param = "c"
-
-
-class EventViewSet(
-    PermissionPolicyMixin, mixins.ListModelMixin, viewsets.GenericViewSet
-):
-    """
-    API endpoint that allows events to be viewed.
-    """
-
-    queryset = Event.objects.all()
-    serializer_class = EventDetailSerializer
-    pagination_class = CursorSetPagination
-    permission_classes = [IsAuthenticated & ValidOrganization]
-    http_method_names = [
-        "get",
-        "head",
-    ]
-
-    def get_queryset(self):
-        now = now_utc()
-        organization = self.request.organization
-        return (
-            super()
-            .get_queryset()
-            .filter(organization=organization, time_created__lt=now)
+        serializer = DashboardAccessSerializer(
+            data={
+                "access_token": dashboard_access_out.token,
+                "organization_id": organization.organization_id.hex
+            }
         )
+        serializer.is_valid(raise_exception=True)
+        return Response(serializer.validated_data, status=status.HTTP_200_OK)
 
-    def get_serializer_context(self):
-        context = super().get_serializer_context()
-        organization = self.request.organization
-        context.update({"organization": organization})
-        return context
+
+class EventViewSet(api_views.EventViewSet):
+    permission_classes = [IsAuthenticated & ValidOrganization]
 
     @extend_schema(
         parameters=[
             EventSearchRequestSerializer,
             OpenApiParameter(
-                name=CursorSetPagination.cursor_query_param,
+                name=api_views.CursorSetPagination.cursor_query_param,
                 type=str,
                 location=OpenApiParameter.QUERY,
-                description=CursorSetPagination.cursor_query_description,
+                description=api_views.CursorSetPagination.cursor_query_description,
             ),
         ],
         responses=EventDetailSerializer(many=True),
@@ -512,7 +484,7 @@ class EventViewSet(
         detail=False,
         methods=["get"],
         url_path="search",
-        pagination_class=CursorSetPagination,
+        pagination_class=api_views.CursorSetPagination,
     )
     def search(self, request):
         # dont use self.get_queryset() since we use diff for request and response
@@ -608,31 +580,11 @@ class CustomerViewSet(api_views.CustomerViewSet):
     http_method_names = ["get", "post", "head", "patch"]
 
     def get_serializer_class(self):
-        if self.action == "partial_update":
-            return CustomerUpdateSerializer
-        elif self.action == "summary":
+        if self.action == "summary":
             return CustomerSummarySerializer
         elif self.action == "totals":
             return CustomerWithRevenueSerializer
         return super().get_serializer_class(default=CustomerDetailSerializer)
-
-    @extend_schema(responses=PlanVersionDetailSerializer)
-    def update(self, request, *args, **kwargs):
-        customer = self.get_object()
-        serializer = self.get_serializer(customer, data=request.data, partial=True)
-        serializer.is_valid(raise_exception=True)
-        self.perform_update(serializer)
-        if getattr(customer, "_prefetched_objects_cache", None):
-            # If 'prefetch_related' has been applied to a queryset, we need to
-            # forcibly invalidate the prefetch cache on the instance.
-            customer._prefetched_objects_cache = {}
-
-        return Response(
-            CustomerDetailSerializer(
-                customer, context=self.get_serializer_context()
-            ).data,
-            status=status.HTTP_200_OK,
-        )
 
     @extend_schema(request=None, responses=CustomerSummarySerializer)
     @action(detail=False, methods=["get"], url_path="summary")
@@ -656,92 +608,11 @@ class CustomerViewSet(api_views.CustomerViewSet):
         return Response(cust, status=status.HTTP_200_OK)
 
 
-class MetricViewSet(PermissionPolicyMixin, viewsets.ModelViewSet):
-    http_method_names = ["get", "post", "head", "patch"]
-    lookup_field = "metric_id"
-    permission_classes_per_method = {
-        "create": [IsAuthenticated & ValidOrganization],
-        "partial_update": [IsAuthenticated & ValidOrganization],
-    }
-    queryset = Metric.objects.all()
-
-    def get_object(self):
-        string_uuid = self.kwargs[self.lookup_field]
-        uuid = MetricUUIDField().to_internal_value(string_uuid)
-        self.kwargs[self.lookup_field] = uuid
-        return super().get_object()
-
-    def get_queryset(self):
-        organization = self.request.organization
-        qs = super().get_queryset()
-        qs = qs.filter(organization=organization, status=METRIC_STATUS.ACTIVE)
-        qs = qs.prefetch_related("numeric_filters", "categorical_filters")
-        return qs
-
-    def get_serializer_class(self):
-        if self.action == "partial_update":
-            return MetricUpdateSerializer
-        elif self.action == "create":
-            return MetricCreateSerializer
-        return MetricDetailSerializer
-
-    def get_serializer_context(self):
-        context = super().get_serializer_context()
-        organization = self.request.organization
-        context.update({"organization": organization})
-        return context
-
-    def dispatch(self, request, *args, **kwargs):
-        response = super().dispatch(request, *args, **kwargs)
-        if status.is_success(response.status_code):
-            try:
-                username = self.request.user.username
-            except Exception:
-                username = None
-            organization = self.request.organization
-            posthog.capture(
-                POSTHOG_PERSON
-                if POSTHOG_PERSON
-                else (
-                    username
-                    if username
-                    else organization.organization_name + " (API Key)"
-                ),
-                event=f"{self.action}_metric",
-                properties={"organization": organization.organization_name},
-            )
-        return response
-
-    @extend_schema(responses=MetricDetailSerializer)
-    def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        instance = self.perform_create(serializer)
-        metric_data = MetricDetailSerializer(instance).data
-        return Response(metric_data, status=status.HTTP_201_CREATED)
-
-    def perform_create(self, serializer):
-        try:
-            instance = serializer.save(organization=self.request.organization)
-            return instance
-        except IntegrityError as e:
-            cause = e.__cause__
-            if "unique_org_billable_metric_name" in str(cause):
-                error_message = "A billable metric with the same name already exists for this organization. Please choose a different name."
-                raise DuplicateMetric(error_message)
-            elif "uq_metric_w_null__" in str(cause):
-                error_message = "A metric with the same name, type, and other fields already exists for this organization. Please choose a different name or type, or change the other fields."
-                raise DuplicateMetric(error_message)
-            else:
-                raise ServerError(f"Unknown error occurred while creating metric: {e}")
+class MetricViewSet(api_views.MetricViewSet):
+    pass
 
 
-class FeatureViewSet(
-    PermissionPolicyMixin,
-    mixins.ListModelMixin,
-    mixins.CreateModelMixin,
-    viewsets.GenericViewSet,
-):
+class FeatureViewSet(api_views.FeatureViewSet):
     serializer_class = FeatureDetailSerializer
     http_method_names = ["get", "post", "head"]
     permission_classes_per_method = {
@@ -754,49 +625,6 @@ class FeatureViewSet(
         if self.action == "create":
             return FeatureCreateSerializer
         return FeatureDetailSerializer
-
-    def get_queryset(self):
-        organization = self.request.organization
-        objs = Feature.objects.filter(organization=organization)
-        return objs
-
-    def get_serializer_context(self):
-        context = super().get_serializer_context()
-        organization = self.request.organization
-        context.update({"organization": organization})
-        return context
-
-    def dispatch(self, request, *args, **kwargs):
-        response = super().dispatch(request, *args, **kwargs)
-        if status.is_success(response.status_code):
-            try:
-                username = self.request.user.username
-            except Exception:
-                username = None
-            organization = self.request.organization
-            posthog.capture(
-                POSTHOG_PERSON
-                if POSTHOG_PERSON
-                else (
-                    username
-                    if username
-                    else organization.organization_name + " (API Key)"
-                ),
-                event=f"{self.action}_feature",
-                properties={"organization": organization.organization_name},
-            )
-        return response
-
-    @extend_schema(responses=FeatureDetailSerializer)
-    def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        instance = self.perform_create(serializer)
-        feature_data = FeatureDetailSerializer(instance).data
-        return Response(feature_data, status=status.HTTP_201_CREATED)
-
-    def perform_create(self, serializer):
-        return serializer.save(organization=self.request.organization)
 
 
 class PlanVersionViewSet(PermissionPolicyMixin, viewsets.ModelViewSet):
@@ -1307,9 +1135,10 @@ class PlanViewSet(api_views.PlanViewSet):
             user = self.request.user
         else:
             user = None
-        instance = serializer.save(
-            organization=self.request.organization, created_by=user
-        )
+        with transaction.atomic():
+            instance = serializer.save(
+                organization=self.request.organization, created_by=user
+            )
         return instance
 
     @extend_schema(
@@ -1340,9 +1169,10 @@ class PlanViewSet(api_views.PlanViewSet):
             raise InvalidOperation("Cannot delete plan with active subscriptions")
         versions = plan.versions.filter(deleted__isnull=True)
         num_versions = versions.count()
-        versions.update(deleted=now)
-        plan.deleted = now
-        plan.save()
+        with transaction.atomic():
+            versions.update(deleted=now)
+            plan.deleted = now
+            plan.save()
         return Response(
             {
                 "success": True,
@@ -1504,8 +1334,9 @@ class PlanViewSet(api_views.PlanViewSet):
             plan_versions = plan.versions.get_queryset()
         else:
             plan_versions = serializer.validated_data["plan_versions"]
-        for pv in plan_versions:
-            pv.features.add(feature)
+        with transaction.atomic():
+            for pv in plan_versions:
+                pv.features.add(feature)
         return Response(
             {
                 "success": True,
@@ -1565,8 +1396,9 @@ class PlanViewSet(api_views.PlanViewSet):
             raise ValidationError(
                 f"Plan {plan.plan_name} does not have any of the plan versions specified under version number {serializer.validated_data['version_number']} "
             )
-        for pv in plan_versions:
-            pv.features.add(feature)
+        with transaction.atomic():
+            for pv in plan_versions:
+                pv.features.add(feature)
         return Response(
             {
                 "success": True,
@@ -1629,7 +1461,8 @@ class PlanViewSet(api_views.PlanViewSet):
             update_kwargs["active_from"] = serializer.validated_data["active_from"]
         if "active_to" in serializer.validated_data:
             update_kwargs["active_to"] = serializer.validated_data["active_to"]
-        plan_versions.update(**update_kwargs)
+        with transaction.atomic():
+            plan_versions.update(**update_kwargs)
         return Response(
             {
                 "success": True,
@@ -1702,9 +1535,10 @@ class PlanViewSet(api_views.PlanViewSet):
                 raise ValidationError(
                     f"Multiple replacement plan versions {replacement_version_number} for currency {pv.currency} exist."
                 )
-        for pv, replacement in replacement_map.items():
-            pv.replacement = replacement
-            pv.save()
+        with transaction.atomic():
+            for pv, replacement in replacement_map.items():
+                pv.replacement = replacement
+                pv.save()
         return Response(
             {
                 "success": True,
@@ -1756,7 +1590,8 @@ class PlanViewSet(api_views.PlanViewSet):
             raise ValidationError(
                 "Transition to plan cannot be the same as the plan being updated."
             )
-        current_plan_versions.update(transition_to=transition_to_plan)
+        with transaction.atomic():
+            current_plan_versions.update(transition_to=transition_to_plan)
         return Response(
             {
                 "success": True,
@@ -1821,6 +1656,9 @@ class SubscriptionViewSet(api_views.SubscriptionViewSet):
 
 class InvoiceViewSet(api_views.InvoiceViewSet):
     http_method_names = ["get", "patch", "head", "post"]
+    permission_classes_per_method = {
+        "partial_update": [IsAuthenticated & ValidOrganization],
+    }
 
     def get_serializer_class(self):
         if self.action == "send":
@@ -1973,52 +1811,15 @@ class AnalysisViewSet(PermissionPolicyMixin, viewsets.ModelViewSet):
         return context
 
 
-class ProductViewSet(viewsets.ModelViewSet):
-    serializer_class = ProductSerializer
-    lookup_field = "product_id"
-    http_method_names = [
-        "get",
-        "post",
-        "head",
-    ]
-    queryset = Product.objects.all()
-
-    def get_queryset(self):
-        organization = self.request.organization
-        return Product.objects.filter(organization=organization)
-
-    def perform_create(self, serializer):
-        serializer.save(organization=self.request.organization)
-
-    def dispatch(self, request, *args, **kwargs):
-        response = super().dispatch(request, *args, **kwargs)
-        if status.is_success(response.status_code):
-            try:
-                username = self.request.user.username
-            except Exception:
-                username = None
-            organization = self.request.organization
-            posthog.capture(
-                POSTHOG_PERSON
-                if POSTHOG_PERSON
-                else (
-                    username
-                    if username
-                    else organization.organization_name + " (API Key)"
-                ),
-                event=f"{self.action}_product",
-                properties={"organization": organization.organization_name},
-            )
-        return response
-
-    def get_serializer_context(self):
-        context = super().get_serializer_context()
-        organization = self.request.organization
-        context.update({"organization": organization})
-        return context
+class ProductViewSet(api_views.ProductViewSet):
+    pass
 
 
-class ActionCursorSetPagination(CursorSetPagination):
+class AddOnCategoryViewSet(api_views.AddOnCategoryViewSet):
+    pass
+
+
+class ActionCursorSetPagination(api_views.CursorSetPagination):
     ordering = "-timestamp"
 
 
