@@ -48,7 +48,7 @@ func main() {
 		panic(err)
 	}
 
-	seeds := []string{config.Conf.KafkaURL}
+	seeds := config.Conf.KafkaURL
 
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(seeds...),

@@ -46,21 +46,43 @@ func (c *RedisCache) Set(key string, value interface{}, expiration *time.Duratio
 
 func New(config config.Config) (Cache, error) {
 
-	address := config.RedisURL
+	useSentinel := config.RedisUseSentinel
+	var rdb redis.Client
+	if useSentinel == true {
+		redisSentinels := config.RedisSentinels
+		if len(redisSentinels) == 0 {
+			return nil, errors.New("redis sentinels is empty")
+		}
 
-	if address == "" {
-		return nil, errors.New("redis url is empty")
+		var opt redis.FailoverOptions
+		enableAuthentication := config.RedisSentinelEnableAuthentication
+		masterName := config.RedisMaster
+		db := config.RedisCachingDatabase
+		if enableAuthentication == true {
+			sentinelPassword := config.RedisSentinelPassword
+			if sentinelPassword == "" {
+				return nil, errors.New("must set REDIS_SENTINEL_PASSWORD when enable redis sentinel authentication")
+			} else {
+				opt = redis.FailoverOptions{MasterName: masterName, SentinelAddrs: redisSentinels, SentinelPassword: sentinelPassword, DB: db}
+			}
+		} else {
+			opt = redis.FailoverOptions{MasterName: masterName, SentinelAddrs: redisSentinels, DB: db}
+		}
+
+		rdb = *redis.NewFailoverClient(&opt)
+	} else {
+		address := config.RedisURL
+		if address == "" {
+			return nil, errors.New("redis url is empty")
+		}
+		opt, err := redis.ParseURL(address)
+		if err != nil {
+			return nil, err
+		}
+		rdb = *redis.NewClient(opt)
 	}
-
-	opt, err := redis.ParseURL(address)
-	if err != nil {
-		return nil, err
-	}
-
-	rdb := redis.NewClient(opt)
-
 	cache := &RedisCache{
-		rdb:               rdb,
+		rdb:               &rdb,
 		defaultExpiration: 10 * time.Second,
 	}
 

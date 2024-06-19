@@ -97,7 +97,7 @@ def subscription_test_common_setup(
             _quantity=3,
         )
         for metric in metric_set:
-            METRIC_HANDLER_MAP[metric.metric_type].create_continuous_aggregate(metric)
+            metric.provision_materialized_views()
         setup_dict["metrics"] = metric_set
         product = add_product_to_org(org)
         setup_dict["product"] = product
@@ -1130,10 +1130,7 @@ class TestResetAndInvoicingIntervals:
             if br.start_date > now_utc():
                 assert br.next_invoicing_date == br.invoicing_dates[0]
             else:
-                assert br.next_invoicing_date in [
-                    br.invoicing_dates[-2],
-                    br.invoicing_dates[-1],
-                ]
+                assert br.next_invoicing_date == br.invoicing_dates[1]
             assert br.fully_billed is False
             assert br.unadjusted_duration_microseconds == 7 * 86400000000 or (
                 br.end_date == br.subscription.end_date

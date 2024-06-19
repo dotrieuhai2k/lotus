@@ -1,5 +1,6 @@
 import collections
 import datetime
+import ipaddress
 import json
 import uuid
 from collections import OrderedDict, namedtuple
@@ -10,6 +11,7 @@ import pytz
 from dateutil import parser
 from dateutil.relativedelta import relativedelta
 from django.db.models import Field, Model
+
 from metering_billing.exceptions.exceptions import ServerError
 from metering_billing.utils.enums import (
     METRIC_GRANULARITY,
@@ -49,13 +51,20 @@ def make_hashable(obj):
 def convert_to_decimal(value):
     if value is None:
         return Decimal(0)
-    return Decimal(value).quantize(Decimal(".0000000001"), rounding=ROUND_UP)
+    return Decimal(str(value)).quantize(Decimal(".0000000001"), rounding=ROUND_UP)
 
 
 def convert_to_two_decimal_places(value):
     if value is None:
         return Decimal(0)
-    return Decimal(value).quantize(Decimal(".01"), rounding=ROUND_HALF_UP)
+    return Decimal(str(value)).quantize(Decimal(".01"), rounding=ROUND_HALF_UP)
+
+
+def rounded_to_currency(value, currency):
+    if currency == "VND":
+        return Decimal(str(value)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    else:
+        return convert_to_two_decimal_places(value)
 
 
 def convert_to_date(value):
@@ -263,7 +272,7 @@ def now_utc_ts():
     return str(now_utc().timestamp())
 
 
-def get_granularity_ratio(metric_granularity, proration_granularity, start_date):
+def get_granularity_ratio(metric_granularity, proration_granularity, start_date=None):
     if (
         proration_granularity == METRIC_GRANULARITY.TOTAL
         or proration_granularity is None
@@ -289,8 +298,10 @@ def get_granularity_ratio(metric_granularity, proration_granularity, start_date)
             METRIC_GRANULARITY.DAY: 1,
         },
     }
-    plus_month = start_date + relativedelta(months=1)
-    days_in_month = (plus_month - start_date).days
+    days_in_month = 730 / 24
+    if start_date:
+        plus_month = start_date + relativedelta(months=1)
+        days_in_month = (plus_month - start_date).days
     granularity_dict[METRIC_GRANULARITY.MONTH] = {
         METRIC_GRANULARITY.SECOND: days_in_month * 24 * 60 * 60,
         METRIC_GRANULARITY.MINUTE: days_in_month * 24 * 60,
@@ -298,8 +309,10 @@ def get_granularity_ratio(metric_granularity, proration_granularity, start_date)
         METRIC_GRANULARITY.DAY: days_in_month,
         METRIC_GRANULARITY.MONTH: 1,
     }
-    plus_quarter = start_date + relativedelta(months=3)
-    days_in_quarter = (plus_quarter - start_date).days
+    days_in_quarter = 730 / 8
+    if start_date:
+        plus_quarter = start_date + relativedelta(months=3)
+        days_in_quarter = (plus_quarter - start_date).days
     granularity_dict[METRIC_GRANULARITY.QUARTER] = {
         METRIC_GRANULARITY.SECOND: days_in_quarter * 24 * 60 * 60,
         METRIC_GRANULARITY.MINUTE: days_in_quarter * 24 * 60,
@@ -308,8 +321,10 @@ def get_granularity_ratio(metric_granularity, proration_granularity, start_date)
         METRIC_GRANULARITY.MONTH: 3,
         METRIC_GRANULARITY.QUARTER: 1,
     }
-    plus_year = start_date + relativedelta(years=1)
-    days_in_year = (plus_year - start_date).days
+    days_in_year = 365
+    if start_date:
+        plus_year = start_date + relativedelta(years=1)
+        days_in_year = (plus_year - start_date).days
     granularity_dict[METRIC_GRANULARITY.YEAR] = {
         METRIC_GRANULARITY.SECOND: days_in_year * 24 * 60 * 60,
         METRIC_GRANULARITY.MINUTE: days_in_year * 24 * 60,
@@ -545,6 +560,19 @@ def random_uuid():
     return str(uuid.uuid4().hex)
 
 
+def localize_datetime(dt, timezone):
+    if isinstance(timezone, pytz.BaseTzInfo):
+        tz = timezone
+    elif isinstance(timezone, str):
+        if timezone not in pytz.all_timezones:
+            raise ValueError(f"Invalid timezone: {timezone}")
+        tz = pytz.timezone(timezone)
+    else:
+        raise ValueError(f"Invalid timezone: {timezone}")
+
+    return dt.astimezone(tz)
+
+
 def date_as_min_dt(date, timezone):
     if isinstance(timezone, pytz.BaseTzInfo):
         tz = timezone
@@ -554,7 +582,7 @@ def date_as_min_dt(date, timezone):
         tz = pytz.timezone(timezone)
     else:
         raise ValueError(f"Invalid timezone: {timezone}")
-    return datetime.datetime.combine(date, datetime.time.min).astimezone(tz)
+    return tz.localize(datetime.datetime.combine(date, datetime.time.min))
 
 
 def date_as_max_dt(date, timezone):
@@ -566,7 +594,7 @@ def date_as_max_dt(date, timezone):
         tz = pytz.timezone(timezone)
     else:
         raise ValueError(f"Invalid timezone: {timezone}")
-    return datetime.datetime.combine(date, datetime.time.max).astimezone(tz)
+    return tz.localize(datetime.datetime.combine(date, datetime.time.max))
 
 
 def namedtuplefetchall(cursor):
@@ -592,3 +620,42 @@ def idempotency_id_uuidv5(idempotency_id):
     from django.conf import settings
 
     return uuid.uuid5(settings.IDEMPOTENCY_ID_NAMESPACE, idempotency_id)
+
+
+def granularity_to_seconds(granularity, plan_duration):
+    if granularity == METRIC_GRANULARITY.TOTAL:
+        granularity = PLAN_DURATION.to_metric_granularity(plan_duration)
+
+    granularity_seconds = get_granularity_ratio(
+        granularity,
+        METRIC_GRANULARITY.SECOND,
+        start_date=None
+    )
+    return granularity_seconds
+
+def get_client_ip(request):
+    """Extracts client IP from request
+
+    Ref: https://github.com/lingster/drf-api-tracking/blob/master/rest_framework_tracking/base_mixins.py#L116
+    """
+    ipaddr = request.META.get("HTTP_X_REAL_IP", "").split(",")[0]
+    if not ipaddr:
+        ipaddr = request.META.get("HTTP_X_FORWARDED_FOR", "").split(",")[-1].strip()
+        if not ipaddr:
+            ipaddr = request.META.get("REMOTE_ADDR", "")
+
+    # Account for IPv4 and IPv6 addresses, each possibly with port appended. Possibilities are:
+    # <ipv4 address>
+    # <ipv6 address>
+    # <ipv4 address>:port
+    # [<ipv6 address>]:port
+    # Note that ipv6 addresses are colon separated hex numbers
+    possibles = (ipaddr.lstrip("[").split("]")[0], ipaddr.split(":")[0])
+
+    for addr in possibles:
+        try:
+            return str(ipaddress.ip_address(addr))
+        except ValueError:
+            pass
+
+    return ipaddr

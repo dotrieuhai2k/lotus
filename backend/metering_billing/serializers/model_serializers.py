@@ -1050,9 +1050,11 @@ class PlanComponentCreateSerializer(TimezoneFieldMixin, serializers.ModelSeriali
             prepaid_charge = {
                 **prepaid_charge,
                 "organization": self.context["organization"],
-                "component": pc,
             }
-            ComponentChargeCreateSerializer(context=self.context).create(prepaid_charge)
+            fixed_charge = ComponentChargeCreateSerializer(context=self.context).create(prepaid_charge)
+            pc.fixed_charge = fixed_charge
+            pc.save()
+
         return pc
 
 

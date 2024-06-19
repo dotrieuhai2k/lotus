@@ -203,8 +203,6 @@ def calculate_subscription_record_flat_fees(
         else:
             billing_plan = subscription_record.billing_plan
             billing_plan_name = str(billing_plan)
-            start = billing_record.start_date
-            end = billing_record.end_date
             qty = subscription_record.quantity
             billing_type = billing_record.recurring_charge.get_charge_timing_display()
             # one case... if the invoice charge timing is in arrears, but the billing record end date is past the invoice issue date, then we need to change the charge timing to intermediate because it's not done billing yet
@@ -223,8 +221,8 @@ def calculate_subscription_record_flat_fees(
             if flat_fee_due > 0:
                 InvoiceLineItem.objects.create(
                     name=f"{billing_plan_name} Flat Fee",
-                    start_date=convert_to_datetime(start, date_behavior="min"),
-                    end_date=convert_to_datetime(end, date_behavior="max"),
+                    start_date=billing_record.start_date,
+                    end_date=billing_record.end_date,
                     quantity=qty if qty > 1 else None,
                     base=flat_fee_due,
                     billing_type=billing_type,
@@ -275,7 +273,7 @@ def make_billing_record_single_line_item(
 
     if (
         billing_record.next_invoicing_date > invoice.issue_date and not draft
-    ) or billing_record.fully_billed:
+    ) or billing_record.fully_billed or billing_record.start_date > invoice.issue_date:
         return
     for component_charge_record in billing_record.component_charge_records.filter(
         fully_billed=False
@@ -305,8 +303,8 @@ def make_billing_record_single_line_item(
     rev = usg_rev["revenue"]
     amt_already_invoiced = billing_record.amt_already_invoiced()
     qty_already_invoiced = billing_record.qty_already_invoiced()
-    net_qty = qty or 0 - qty_already_invoiced
-    net_rev = rev or 0 - amt_already_invoiced
+    net_qty = Decimal(str(qty or 0)) - qty_already_invoiced
+    net_rev = Decimal(str(rev or 0)) - amt_already_invoiced
     assert (
         net_qty >= 0
     ), "net qty should be >= 0, billable quantity should never go down"
@@ -354,7 +352,7 @@ def find_next_billing_plan(subscription_record):
 
 
 def check_subscription_record_renews(subscription_record, issue_date):
-    if subscription_record.end_date < issue_date:
+    if subscription_record.end_date > issue_date:
         return False
     if subscription_record.parent is None:
         return subscription_record.auto_renew
@@ -394,6 +392,9 @@ def create_next_subscription_record(subscription_record, next_bp):
         component_fixed_charges_initial_units=component_fixed_charges_initial_units,
         do_generate_invoice=False,
     )
+    # Make subscription records which ended (end_date <= now) is not auto renew
+    subscription_record.auto_renew = False
+    subscription_record.save()
     return next_sr
 
 
@@ -474,7 +475,7 @@ def apply_plan_discounts(invoice):
                     InvoiceLineItemAdjustment.objects.create(
                         invoice_line_item=line_item,
                         adjustment_type=InvoiceLineItemAdjustment.AdjustmentType.PLAN_ADJUSTMENT,
-                        amount=discount_amount,
+                        amount=discount_amount - line_item.base,
                         account=21000,
                         organization=invoice.organization,
                     )

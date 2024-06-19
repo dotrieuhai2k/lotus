@@ -314,9 +314,7 @@ class TestCalculateMetric:
             usage_aggregation_type=METRIC_AGGREGATION.UNIQUE,
             metric_type=METRIC_TYPE.COUNTER,
         )
-        METRIC_HANDLER_MAP[billable_metric.metric_type].create_continuous_aggregate(
-            billable_metric
-        )
+        billable_metric.provision_materialized_views()
         time_created = now_utc()
         customer = setup_dict["customer"]
         baker.make(
@@ -397,9 +395,7 @@ class TestCalculateMetric:
             metric_type=METRIC_TYPE.GAUGE,
             event_type=EVENT_TYPE.TOTAL,
         )
-        METRIC_HANDLER_MAP[billable_metric.metric_type].create_continuous_aggregate(
-            billable_metric
-        )
+        billable_metric.provision_materialized_views()
         time_created = now_utc() - relativedelta(days=45)
         customer = setup_dict["customer"]
         event_times = [time_created] + [
@@ -487,9 +483,7 @@ class TestCalculateMetric:
             proration=METRIC_GRANULARITY.DAY,
             event_type=EVENT_TYPE.TOTAL,
         )
-        METRIC_HANDLER_MAP[billable_metric.metric_type].create_continuous_aggregate(
-            billable_metric
-        )
+        billable_metric.provision_materialized_views()
         time_created = now_utc() - relativedelta(days=45)
         customer = setup_dict["customer"]
         event_times = [time_created] + [
@@ -572,9 +566,7 @@ class TestCalculateMetric:
             metric_type=METRIC_TYPE.RATE,
             granularity=METRIC_GRANULARITY.DAY,
         )
-        METRIC_HANDLER_MAP[billable_metric.metric_type].create_continuous_aggregate(
-            billable_metric
-        )
+        billable_metric.provision_materialized_views()
         time_created = now_utc() - relativedelta(days=14, hour=0)
         customer = setup_dict["customer"]
         # 64 in an hour, 14 days ago
@@ -683,9 +675,7 @@ class TestCalculateMetric:
             event_type=EVENT_TYPE.DELTA,
             proration=METRIC_GRANULARITY.DAY,
         )
-        METRIC_HANDLER_MAP[billable_metric.metric_type].create_continuous_aggregate(
-            billable_metric
-        )
+        billable_metric.provision_materialized_views()
         time_created = now_utc() - relativedelta(days=45)
         customer = setup_dict["customer"]
         event_times = [time_created + relativedelta(days=i) for i in range(8)]
@@ -769,9 +759,7 @@ class TestCalculateMetricProrationForGauge:
             proration=METRIC_GRANULARITY.MINUTE,
             event_type=EVENT_TYPE.TOTAL,
         )
-        METRIC_HANDLER_MAP[billable_metric.metric_type].create_continuous_aggregate(
-            billable_metric
-        )
+        billable_metric.provision_materialized_views()
         time_created = now_utc() - relativedelta(days=45)
         customer = setup_dict["customer"]
         event_times = [
@@ -885,9 +873,7 @@ class TestCalculateMetricProrationForGauge:
             proration=METRIC_GRANULARITY.HOUR,
             event_type=EVENT_TYPE.TOTAL,
         )
-        METRIC_HANDLER_MAP[billable_metric.metric_type].create_continuous_aggregate(
-            billable_metric
-        )
+        billable_metric.provision_materialized_views()
         time_created = now_utc() - relativedelta(days=45)
         customer = setup_dict["customer"]
         event_times = [
@@ -999,9 +985,7 @@ class TestCalculateMetricProrationForGauge:
             proration=METRIC_GRANULARITY.HOUR,
             event_type=EVENT_TYPE.TOTAL,
         )
-        METRIC_HANDLER_MAP[billable_metric.metric_type].create_continuous_aggregate(
-            billable_metric
-        )
+        billable_metric.provision_materialized_views()
         time_created = now_utc() - relativedelta(months=3, days=21)
         customer = setup_dict["customer"]
         event_times = [
@@ -1116,9 +1100,7 @@ class TestCalculateMetricWithFilters:
             usage_aggregation_type=METRIC_AGGREGATION.UNIQUE,
             metric_type=METRIC_TYPE.COUNTER,
         )
-        METRIC_HANDLER_MAP[billable_metric.metric_type].create_continuous_aggregate(
-            billable_metric
-        )
+        billable_metric.provision_materialized_views()
         numeric_filter = NumericFilter.objects.create(
             organization=setup_dict["org"],
             property_name="test_filter_property",
@@ -1216,9 +1198,7 @@ class TestCalculateMetricWithFilters:
             metric_type=METRIC_TYPE.GAUGE,
             event_type=EVENT_TYPE.TOTAL,
         )
-        METRIC_HANDLER_MAP[billable_metric.metric_type].create_continuous_aggregate(
-            billable_metric
-        )
+        billable_metric.provision_materialized_views()
         numeric_filter = NumericFilter.objects.create(
             organization=setup_dict["org"],
             property_name="test_filter_property",
@@ -1360,9 +1340,7 @@ class TestCalculateMetricWithFilters:
             cost_per_batch=100,
             metric_units_per_batch=1,
         )
-        METRIC_HANDLER_MAP[billable_metric.metric_type].create_continuous_aggregate(
-            billable_metric
-        )
+        billable_metric.provision_materialized_views()
         with (
             mock.patch("metering_billing.models.now_utc", return_value=time_created),
             mock.patch(
@@ -1401,9 +1379,7 @@ class TestCalculateMetricWithFilters:
             metric_type=METRIC_TYPE.RATE,
             granularity=METRIC_GRANULARITY.DAY,
         )
-        METRIC_HANDLER_MAP[billable_metric.metric_type].create_continuous_aggregate(
-            billable_metric
-        )
+        billable_metric.provision_materialized_views()
         numeric_filter = CategoricalFilter.objects.create(
             organization=setup_dict["org"],
             property_name="test_filter_property",
@@ -2264,9 +2240,7 @@ class TestRegressions:
             proration=METRIC_GRANULARITY.MINUTE,
             event_type=EVENT_TYPE.TOTAL,
         )
-        METRIC_HANDLER_MAP[billable_metric.metric_type].create_continuous_aggregate(
-            billable_metric
-        )
+        billable_metric.provision_materialized_views()
         time_created = now_utc() - relativedelta(days=45)
         customer = setup_dict["customer"]
         event_times = [

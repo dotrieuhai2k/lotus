@@ -21,7 +21,7 @@ from django.core.validators import (
     MinLengthValidator,
     MinValueValidator,
 )
-from django.db import connection, models
+from django.db import connection, models, transaction
 from django.db.models import Count, F, FloatField, Q, Sum
 from django.db.models.constraints import CheckConstraint, UniqueConstraint
 from django.db.models.functions import Cast, Coalesce
@@ -1501,15 +1501,15 @@ class PriceTier(models.Model):
         if (
             bulk_pricing_enabled
             and self.range_end is not None
-            and self.range_end <= usage
+            and self.range_end < usage
         ):
             return revenue
 
         if bulk_pricing_enabled:
-            usage_in_range = self.range_start <= usage
+            usage_in_range = self.range_start < usage
         else:
             usage_in_range = (
-                self.range_start <= usage
+                self.range_start <= usage + 1
                 if discontinuous_range
                 else self.range_start < usage or self.range_start == 0
             )
@@ -1675,7 +1675,7 @@ class PlanComponent(models.Model):
 
         invoicing_dates = []
 
-        invoicing_date = start_date
+        invoicing_date = start_date - relativedelta(microseconds=1)
         while invoicing_date < end_date:
             invoicing_date += interval_delta
             append_date = min(invoicing_date, end_date)
@@ -1725,7 +1725,7 @@ class PlanComponent(models.Model):
             unadjusted_duration_microseconds = (
                 (range_start_date + interval_delta) - range_start_date
             ).total_seconds() * 10**6
-            return [(sr_start_date, sr_end_date, unadjusted_duration_microseconds)]
+            return [(range_start_date, range_end_date, unadjusted_duration_microseconds)]
 
         reset_dates = []
 
@@ -2434,7 +2434,7 @@ class PlanVersion(models.Model):
     def is_active(self, time=None):
         if time is None:
             time = now_utc()
-        return self.active_from <= time and (
+        return (self.active_from is not None and self.active_from <= time) and (
             self.active_to is None or self.active_to > time
         )
 
@@ -2614,6 +2614,7 @@ class Plan(models.Model):
     def __str__(self):
         return self.plan_name
 
+    @transaction.atomic
     def add_tags(self, tags):
         existing_tags = self.tags.all()
         existing_tag_names = [tag.tag_name.lower() for tag in existing_tags]
@@ -2632,6 +2633,7 @@ class Plan(models.Model):
                 )
                 self.tags.add(tag_obj)
 
+    @transaction.atomic
     def remove_tags(self, tags):
         existing_tags = self.tags.all()
         tags_lower = [tag["tag_name"].lower() for tag in tags]
@@ -2639,6 +2641,7 @@ class Plan(models.Model):
             if existing_tag.tag_name.lower() in tags_lower:
                 self.tags.remove(existing_tag)
 
+    @transaction.atomic
     def set_tags(self, tags):
         existing_tags = self.tags.all()
         existing_tag_names = [tag.tag_name.lower() for tag in existing_tags]
@@ -2867,11 +2870,11 @@ class SubscriptionRecord(models.Model):
             # check if stripe subscription id is null, then billing plan is not null, and vice versa
             CheckConstraint(
                 check=(
-                    Q(stripe_subscription_id__isnull=False)
+                    (Q(stripe_subscription_id__isnull=False) & ~Q(stripe_subscription_id=''))
                     & Q(billing_plan__isnull=True)
                 )
                 | (
-                    Q(stripe_subscription_id__isnull=True)
+                    (Q(stripe_subscription_id__isnull=True) | Q(stripe_subscription_id=''))
                     & Q(billing_plan__isnull=False)
                 ),
                 name="stripe_subscription_id_xor_billing_plan",
@@ -3357,6 +3360,12 @@ class SubscriptionRecord(models.Model):
         self.end_date = now
         self.auto_renew = False
         self.save()
+
+        # Transfer subscription_filter to new subscription
+        sr.subscription_filters = self.subscription_filters
+        sr.save()
+
+        # Generate Invoice
         generate_invoice([self, sr])
         return sr
 
@@ -3523,7 +3532,7 @@ class BillingRecord(models.Model):
         if self.next_invoicing_date < invoice_date:
             found_next = False
             for invoicing_date in sorted(self.invoicing_dates):
-                if invoicing_date > invoice_date:
+                if invoicing_date > self.next_invoicing_date:
                     self.next_invoicing_date = invoicing_date
                     self.save()
                     found_next = True
@@ -3580,10 +3589,12 @@ class BillingRecord(models.Model):
     def amt_already_invoiced(self):
         if self.recurring_charge:
             return self.line_items.filter(
+                ~Q(invoice__payment_status__in=[Invoice.PaymentStatus.VOIDED, Invoice.PaymentStatus.DRAFT]),
                 chargeable_item_type=CHARGEABLE_ITEM_TYPE.RECURRING_CHARGE
             ).aggregate(Sum("base"))["base__sum"] or Decimal(0.0)
         else:
             return self.line_items.filter(
+                ~Q(invoice__payment_status__in=[Invoice.PaymentStatus.VOIDED, Invoice.PaymentStatus.DRAFT]),
                 chargeable_item_type=CHARGEABLE_ITEM_TYPE.USAGE_CHARGE
             ).aggregate(Sum("base"))["base__sum"] or Decimal(0.0)
 
@@ -3592,6 +3603,7 @@ class BillingRecord(models.Model):
             self.recurring_charge is None
         ), "This is a recurring charge billing record, cannot use this function."
         return self.line_items.filter(
+            ~Q(invoice__payment_status__in=[Invoice.PaymentStatus.VOIDED, Invoice.PaymentStatus.DRAFT]),
             chargeable_item_type=CHARGEABLE_ITEM_TYPE.USAGE_CHARGE
         ).aggregate(Sum("quantity"))["quantity__sum"] or Decimal(0.0)
 

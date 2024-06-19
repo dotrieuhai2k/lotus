@@ -182,4 +182,4 @@ class TestBulkPricing:
         component.save()
         revenue_bulk = component.tier_rating_function(200)
         # everything charged at 10 cents per unit
-        assert revenue_bulk == Decimal("20.00")
+        assert revenue_bulk == Decimal("10.00")

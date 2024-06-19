@@ -83,7 +83,7 @@ def addon_test_common_setup(
             _quantity=4,
         )
         for metric in metric_set:
-            METRIC_HANDLER_MAP[metric.metric_type].create_continuous_aggregate(metric)
+            metric.provision_materialized_views()
         setup_dict["metrics"] = metric_set
         product = add_product_to_org(org)
         setup_dict["product"] = product

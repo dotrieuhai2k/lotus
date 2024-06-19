@@ -27,7 +27,7 @@ from metering_billing.utils.enums import (
 )
 from metering_billing.webhooks import invoice_past_due_webhook
 
-logger = logging.getLogger("django.server")
+logger = logging.getLogger(__name__)
 POSTHOG_PERSON = settings.POSTHOG_PERSON
 
 
@@ -95,22 +95,16 @@ def calculate_invoice_inner():
     now_minus_30 = now_utc() - relativedelta(
         minutes=30
     )  # grace period of 30 minutes for sending events
-    sub_records_to_bill = SubscriptionRecord.objects.filter(
-        Q(end_date__lt=now_minus_30)
-    )
     billing_records_to_bill = BillingRecord.objects.filter(
-        Q(next_invoicing_date__lt=now_minus_30) & Q(fully_billed=False),
+        Q(next_invoicing_date__lt=now_minus_30) | Q(subscription__end_date__lt=now_minus_30),
+        fully_billed=False,
     )
     # Get a list of distinct subscription IDs from the billing records
     subscription_id_from_br = billing_records_to_bill.values_list(
         "subscription", flat=True
     ).distinct()
-    subscription_id_from_sr = sub_records_to_bill.values_list(
-        "id", flat=True
-    ).distinct()
-    # Get the subscription records for the subscriptions
     all_sub_records = SubscriptionRecord.objects.filter(
-        Q(id__in=subscription_id_from_br) | Q(id__in=subscription_id_from_sr)
+        Q(id__in=subscription_id_from_br)
     ).prefetch_related(
         "customer",
         "organization",
@@ -521,10 +515,14 @@ def import_customers_from_payment_processor_inner(payment_processor, organizatio
     from metering_billing.models import Organization
 
     organization = Organization.objects.get(pk=organization_pk)
-    connector = PAYMENT_PROCESSOR_MAP[payment_processor]
-    n = connector.import_customers(organization)
+    if payment_processor in PAYMENT_PROCESSOR_MAP:
+        connector = PAYMENT_PROCESSOR_MAP[payment_processor]
+        n = connector.import_customers(organization)
 
-    return n
+        return n
+    else: 
+        return 0
+
 
 
 @shared_task

@@ -16,6 +16,7 @@ import pytz
 from dateutil import parser
 from dateutil.relativedelta import relativedelta
 from django.conf import settings
+from django.db import transaction
 from django.db.models import (
     Count,
     DecimalField,
@@ -48,6 +49,7 @@ from rest_framework.decorators import (
     permission_classes,
 )
 from rest_framework.exceptions import ValidationError
+from rest_framework.pagination import CursorPagination, PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -64,7 +66,6 @@ from api.serializers.model_serializers import (
     CustomerSerializer,
     EventSerializer,
     InvoiceListFilterSerializer,
-    InvoicePaymentSerializer,
     InvoiceSerializer,
     InvoiceUpdateSerializer,
     ListPlansFilterSerializer,
@@ -81,6 +82,14 @@ from api.serializers.model_serializers import (
     SubscriptionRecordSwitchPlanSerializer,
     SubscriptionRecordUpdateSerializer,
     SubscriptionRecordUpdateSerializerOld,
+    EstimatedPriceSerializer,
+    FeatureSerializer,
+    MetricListFilterSerializer,
+    SubscriptionRecordRenewSerializer,
+    CalculateCostSerializer,
+    SubscriptionRecordCreateCostSerializer, ProductSerializer, ProductCreateSerializer, ProductUpdateSerializer,
+    AddOnCategorySerializer, AddOnCategoryCreateSerializer, AddOnCategoryUpdateSerializer,
+    AddOnCategoryDetailSerializer,
 )
 from api.serializers.nonmodel_serializers import (
     ChangePrepaidUnitsSerializer,
@@ -89,7 +98,9 @@ from api.serializers.nonmodel_serializers import (
     FeatureAccessResponseSerializer,
     MetricAccessRequestSerializer,
     MetricAccessResponseSerializer,
+    PriceEstimateRequestSerializer,
 )
+from api.serializers.webhook_serializers import SubscriptionExpiredSerializer
 from metering_billing.auth.auth_utils import (
     PermissionPolicyMixin,
     fast_api_key_validation_and_cache,
@@ -100,7 +111,7 @@ from metering_billing.exceptions import (
     SwitchPlanDurationMismatch,
     SwitchPlanSamePlanException,
 )
-from metering_billing.exceptions.exceptions import InvalidOperation, NotFoundException
+from metering_billing.exceptions.exceptions import InvalidOperation, NotFoundException, DuplicateMetric
 from metering_billing.invoice import generate_invoice
 from metering_billing.invoice_pdf import get_invoice_presigned_url
 from metering_billing.kafka.producer import Producer
@@ -110,19 +121,26 @@ from metering_billing.models import (
     CustomerBalanceAdjustment,
     Event,
     Invoice,
-    InvoiceLineItem,
     Metric,
     Plan,
     PlanComponent,
     PriceTier,
     RecurringCharge,
     SubscriptionRecord,
-    Tag,
+    Tag, Feature, Product, AddOnCategory,
 )
 from metering_billing.permissions import HasUserAPIKey, ValidOrganization
 from metering_billing.serializers.model_serializers import (
-    DraftInvoiceSerializer,
     MetricDetailSerializer,
+    MetricUpdateSerializer,
+    MetricCreateSerializer,
+    CustomerUpdateSerializer,
+    CustomerDetailSerializer,
+    PlanVersionDetailSerializer,
+    DraftInvoiceResponseSerializer,
+    FeatureCreateSerializer,
+    FeatureDetailSerializer,
+    EventDetailSerializer,
 )
 from metering_billing.serializers.request_serializers import (
     DraftInvoiceRequestSerializer,
@@ -149,6 +167,7 @@ from metering_billing.utils import (
     make_all_dates_times_strings,
     make_all_decimals_floats,
     now_utc,
+    granularity_to_seconds,
 )
 from metering_billing.utils.enums import (
     CUSTOMER_BALANCE_ADJUSTMENT_STATUS,
@@ -163,19 +182,20 @@ from metering_billing.webhooks import (
     customer_created_webhook,
     subscription_cancelled_webhook,
     subscription_created_webhook,
+    subscription_renewed_webhook,
+    subscription_expired_webhook,
 )
 
 POSTHOG_PERSON = settings.POSTHOG_PERSON
 SVIX_CONNECTOR = settings.SVIX_CONNECTOR
 IDEMPOTENCY_ID_NAMESPACE = settings.IDEMPOTENCY_ID_NAMESPACE
-logger = logging.getLogger("django.server")
 USE_KAFKA = settings.USE_KAFKA
 if USE_KAFKA:
     kafka_producer = Producer()
 else:
     kafka_producer = None
 
-logger = logging.getLogger("django.server")
+logger = logging.getLogger(__name__)
 
 
 class EmptySerializer(serializers.Serializer):
@@ -183,8 +203,9 @@ class EmptySerializer(serializers.Serializer):
 
 
 class CustomerViewSet(PermissionPolicyMixin, viewsets.ModelViewSet):
+    permission_classes = [ValidOrganization]
     lookup_field = "customer_id"
-    http_method_names = ["get", "post", "head"]
+    http_method_names = ["get", "post", "head", "patch"]
     queryset = Customer.objects.all()
 
     def get_queryset(self):
@@ -192,71 +213,61 @@ class CustomerViewSet(PermissionPolicyMixin, viewsets.ModelViewSet):
         organization = self.request.organization
         qs = Customer.objects.filter(organization=organization)
         qs = qs.select_related("default_currency")
-        qs = qs.prefetch_related(
-            "organization",
-            Prefetch(
-                "subscription_records",
-                queryset=SubscriptionRecord.base_objects.active(now)
-                .filter(
-                    organization=organization,
-                )
-                .select_related("customer", "billing_plan", "billing_plan__plan")
-                .prefetch_related(
-                    "addon_subscription_records",
-                    "organization",
-                ),
-                to_attr="active_subscription_records",
-            ),
-            Prefetch(
-                "invoices",
-                queryset=Invoice.objects.filter(
-                    organization=organization,
-                    payment_status__in=[
-                        Invoice.PaymentStatus.PAID,
-                        Invoice.PaymentStatus.UNPAID,
-                    ],
-                )
-                .order_by("-issue_date")
-                .select_related("currency")
-                .prefetch_related(
-                    "organization",
-                    Prefetch(
-                        "line_items",
-                        queryset=InvoiceLineItem.objects.all()
-                        .select_related(
-                            "pricing_unit",
-                            "associated_subscription_record",
-                            "associated_plan_version",
-                            "associated_billing_record",
-                        )
-                        .prefetch_related("organization"),
+        if self.action == "retrieve":
+            qs = qs.prefetch_related(
+                Prefetch(
+                    "invoices",
+                    queryset=Invoice.objects.filter(
+                        organization=organization,
+                        payment_status__in=[
+                            Invoice.PaymentStatus.PAID,
+                            Invoice.PaymentStatus.UNPAID,
+                        ],
+                    )
+                    .order_by("-issue_date")
+                    .select_related("currency")
+                    .annotate(
+                        min_date=Min("line_items__start_date"),
+                        max_date=Max("line_items__end_date"),
                     ),
-                )
-                .annotate(
-                    min_date=Min("line_items__start_date"),
-                    max_date=Max("line_items__end_date"),
+                    to_attr="active_invoices",
                 ),
-                to_attr="active_invoices",
-            ),
-        )
-        qs = qs.annotate(
-            total_amount_due=Sum(
-                "invoices__amount",
-                filter=Q(invoices__payment_status=Invoice.PaymentStatus.UNPAID),
-                output_field=DecimalField(),
             )
-        )
+        if self.action in ["summary", "retrieve"]:
+            qs = qs.prefetch_related(
+                Prefetch(
+                    "subscription_records",
+                    queryset=SubscriptionRecord.base_objects.active(now)
+                    .filter(
+                        organization=organization,
+                    )
+                    .select_related("customer", "billing_plan"),
+                    to_attr="active_subscription_records",
+                )
+            )
+        if self.action in ["totals", "retrieve"]:
+            qs = qs.annotate(
+                total_amount_due=Sum(
+                    "invoices__amount",
+                    filter=Q(invoices__payment_status=Invoice.PaymentStatus.UNPAID),
+                    output_field=DecimalField(),
+                )
+            )
         return qs
 
     def get_serializer_class(self, default=None):
         if self.action == "create":
             return CustomerCreateSerializer
+        elif self.action == "partial_update":
+            return CustomerUpdateSerializer
         elif self.action == "archive":
             return EmptySerializer
         elif self.action == "cost_analysis":
             return PeriodRequestSerializer
         elif self.action == "draft_invoice":
             return DraftInvoiceRequestSerializer
+        elif self.action == "estimate_cost":
+            return PriceEstimateRequestSerializer
         if default:
             return default
         return CustomerSerializer
@@ -272,6 +283,24 @@ class CustomerViewSet(PermissionPolicyMixin, viewsets.ModelViewSet):
         customer_data = self.get_serializer(instance).data
         customer_created_webhook(instance, customer_data=customer_data)
         return Response(customer_data, status=status.HTTP_201_CREATED)
+
+    @extend_schema(responses=PlanVersionDetailSerializer)
+    def update(self, request, *args, **kwargs):
+        customer = self.get_object()
+        serializer = self.get_serializer(customer, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        if getattr(customer, "_prefetched_objects_cache", None):
+            # If 'prefetch_related' has been applied to a queryset, we need to
+            # forcibly invalidate the prefetch cache on the instance.
+            customer._prefetched_objects_cache = {}
+
+        return Response(
+            CustomerDetailSerializer(
+                customer, context=self.get_serializer_context()
+            ).data,
+            status=status.HTTP_200_OK,
+        )
 
     @extend_schema(
         responses=CustomerDeleteResponseSerializer,
@@ -309,11 +338,7 @@ class CustomerViewSet(PermissionPolicyMixin, viewsets.ModelViewSet):
     @extend_schema(
         request=DraftInvoiceRequestSerializer,
         parameters=[DraftInvoiceRequestSerializer],
-        responses={
-            200: inline_serializer(
-                name="DraftInvoiceResponse", fields={"invoice": DraftInvoiceSerializer}
-            )
-        },
+        responses=DraftInvoiceResponseSerializer
     )
     @action(
         detail=True, methods=["get"], url_path="draft_invoice", url_name="draft_invoice"
@@ -326,28 +351,24 @@ class CustomerViewSet(PermissionPolicyMixin, viewsets.ModelViewSet):
         sub_records = SubscriptionRecord.objects.active().filter(
             organization=organization, customer=customer
         )
-        response = {"invoices": None}
-        if sub_records is None or len(sub_records) == 0:
-            response = {"invoices": []}
-        else:
-            sub_records = sub_records.select_related("billing_plan").prefetch_related(
-                "billing_plan__plan_components",
-                "billing_plan__plan_components__billable_metric",
-                "billing_plan__plan_components__tiers",
-                "billing_plan__currency",
-            )
+        sub_records = sub_records.select_related("billing_plan").prefetch_related(
+            "billing_plan__plan_components",
+            "billing_plan__plan_components__billable_metric",
+            "billing_plan__plan_components__tiers",
+            "billing_plan__currency",
+        )
+        with transaction.atomic():
             invoices = generate_invoice(
                 sub_records,
                 draft=True,
                 charge_next_plan=serializer.validated_data.get(
-                    "include_next_period", True
+                    "include_next_period", False
                 ),
-            )
-            serializer = DraftInvoiceSerializer(invoices, many=True).data
-            for invoice in invoices:
-                invoice.delete()
-            response = {"invoices": serializer or []}
-        return Response(response, status=status.HTTP_200_OK)
+            ) or []
+            data = DraftInvoiceResponseSerializer({"invoices": invoices}).data
+            transaction.set_rollback(True)
+
+        return Response(data, status=status.HTTP_200_OK)
 
     @extend_schema(
         request=None,
@@ -475,6 +496,45 @@ class CustomerViewSet(PermissionPolicyMixin, viewsets.ModelViewSet):
         context.update({"organization": self.request.organization})
         return context
 
+    @extend_schema(request=PriceEstimateRequestSerializer, responses={200: EstimatedPriceSerializer})
+    @action(detail=False, methods=["post"], url_name='estimate_cost', url_path='estimate_cost')
+    def estimate_cost(self, request, *args, **kwargs):
+        organization = self.request.organization
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        with transaction.atomic():
+            customer = data.get("customer")
+            if not customer:
+                customer, _ = Customer.objects.get_or_create_default_customer(organization=organization)
+            billing_plan = data["plan"].get_version_for_customer(customer)
+
+            duration_seconds = None
+            if data.get("duration"):
+                duration_seconds = data["duration"]["value"] * granularity_to_seconds(
+                    granularity=data["duration"]["unit"],
+                    plan_duration=billing_plan.plan.plan_duration
+                )
+
+            metrics = {}
+            plan_metrics = [comp.billable_metric for comp in billing_plan.plan_components.select_related('billable_metric')]
+            for metric in data['metrics']:
+                value = metric.pop('value')
+                for plan_metric in plan_metrics:
+                    if plan_metric.properties == metric:
+                        metrics[plan_metric.billable_metric_name] = value
+                        break
+
+            context = {
+                "customer": customer,
+                "duration_seconds": duration_seconds,
+                "metrics": metrics,
+            }
+            data = EstimatedPriceSerializer(instance=billing_plan, context=context).data
+            transaction.set_rollback(True)
+
+        return Response(data, status=status.HTTP_200_OK)
+
     def dispatch(self, request, *args, **kwargs):
         response = super().dispatch(request, *args, **kwargs)
         if status.is_success(response.status_code):
@@ -500,7 +560,99 @@ class CustomerViewSet(PermissionPolicyMixin, viewsets.ModelViewSet):
         return response
 
 
+class ProductViewSet(PermissionPolicyMixin, viewsets.ModelViewSet):
+    permission_classes = [ValidOrganization]
+    serializer_class = ProductSerializer
+    lookup_field = "product_id"
+    http_method_names = [
+        "get",
+        "post",
+        "head",
+        "patch",
+    ]
+    queryset = Product.objects.all()
+
+    def get_queryset(self):
+        organization = self.request.organization
+        return Product.objects.filter(organization=organization)
+
+    def get_serializer_class(self):
+        if self.action == "create":
+            return ProductCreateSerializer
+        if self.action == "partial_update":
+            return ProductUpdateSerializer
+        return ProductSerializer
+
+    def perform_create(self, serializer):
+        serializer.save(organization=self.request.organization)
+
+    def dispatch(self, request, *args, **kwargs):
+        response = super().dispatch(request, *args, **kwargs)
+        if status.is_success(response.status_code):
+            try:
+                username = self.request.user.username
+            except Exception:
+                username = None
+            organization = self.request.organization
+            posthog.capture(
+                POSTHOG_PERSON
+                if POSTHOG_PERSON
+                else (
+                    username
+                    if username
+                    else organization.organization_name + " (API Key)"
+                ),
+                event=f"{self.action}_product",
+                properties={"organization": organization.organization_name},
+            )
+        return response
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        organization = self.request.organization
+        context.update({"organization": organization})
+        return context
+
+
+class AddOnCategoryViewSet(PermissionPolicyMixin, viewsets.ModelViewSet):
+    permission_classes = [ValidOrganization]
+    serializer_class = AddOnCategoryDetailSerializer
+    lookup_field = "category_id"
+    http_method_names = ["get", "post", "head", "patch"]
+    queryset = AddOnCategory
+
+    def get_queryset(self):
+        organization = self.request.organization
+        return AddOnCategory.objects.filter(organization=organization)
+
+    def get_serializer_class(self):
+        if self.action == "create":
+            return AddOnCategoryCreateSerializer
+        elif self.action == "partial_update":
+            return AddOnCategoryUpdateSerializer
+        return AddOnCategoryDetailSerializer
+
+    @extend_schema(responses=AddOnCategoryDetailSerializer)
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        instance = self.perform_create(serializer)
+        ret = AddOnCategoryDetailSerializer(instance).data
+        return Response(ret, status=status.HTTP_201_CREATED)
+
+    def perform_create(self, serializer):
+        instance = serializer.save(organization=self.request.organization)
+        return instance
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        organization = self.request.organization
+        context.update({"organization": organization})
+        return context
+
+
 class PlanViewSet(PermissionPolicyMixin, viewsets.ModelViewSet):
+    permission_classes = [ValidOrganization]
     serializer_class = PlanSerializer
     lookup_field = "plan_id"
     http_method_names = ["get", "head"]
@@ -524,19 +676,28 @@ class PlanViewSet(PermissionPolicyMixin, viewsets.ModelViewSet):
         organization = self.request.organization
         # first filter plans
         plan_filter_serializer = ListPlansFilterSerializer(
-            data=self.request.query_params
+            data=self.request.query_params, context={"organization": organization}
         )
         plan_filter_serializer.is_valid(raise_exception=True)
 
         plans_filters = []
 
+        plan_name = plan_filter_serializer.validated_data.get("plan_name")
         include_tags = plan_filter_serializer.validated_data.get("include_tags")
         include_tags_all = plan_filter_serializer.validated_data.get("include_tags_all")
         exclude_tags = plan_filter_serializer.validated_data.get("exclude_tags")
         duration = plan_filter_serializer.validated_data.get("duration")
+        product_name = plan_filter_serializer.validated_data.get("product_name")
+        product = plan_filter_serializer.validated_data.get("product")
 
+        if plan_name:
+            plans_filters.append(Q(plan_name=plan_name))
         if duration:
-            plans_filters.append(Q(duration=duration))
+            plans_filters.append(Q(plan_duration=duration))
+        if product_name:
+            plans_filters.append(Q(parent_product__name=product_name))
+        if product:
+            plans_filters.append(Q(parent_product=product))
 
         # then filter plan versions
         versions_filters = []
@@ -579,6 +740,7 @@ class PlanViewSet(PermissionPolicyMixin, viewsets.ModelViewSet):
         # first go for the ones that are one away (FK) and not nested
         qs = qs.select_related(
             "organization",
+            "parent_product",
             "created_by",
         )
         # then for many to many / reverse FK but still have
@@ -645,6 +807,21 @@ class PlanViewSet(PermissionPolicyMixin, viewsets.ModelViewSet):
                             .values("billing_plan")
                             .annotate(active_subscriptions=Count("id"))
                             .values("active_subscriptions")[:1]
+                        ),
+                        Value(0),
+                    )
+                )
+                .annotate(
+                    uncancelled_subscriptions=Coalesce(
+                        Subquery(
+                            SubscriptionRecord.base_objects.filter(
+                                organization=organization,
+                                billing_plan=OuterRef("pk"),
+                                is_cancelled=False,
+                            )
+                            .values("billing_plan")
+                            .annotate(srs=Count("id"))
+                            .values("srs")[:1]
                         ),
                         Value(0),
                     )
@@ -745,6 +922,7 @@ class SubscriptionViewSet(
     mixins.ListModelMixin,
     viewsets.GenericViewSet,
 ):
+    permission_classes = [ValidOrganization]
     http_method_names = [
         "get",
         "head",
@@ -819,12 +997,20 @@ class SubscriptionViewSet(
             return SubscriptionRecordCreateSerializerOld
         elif self.action == "create":
             return SubscriptionRecordCreateSerializer
+        elif self.action == "renew":
+            return SubscriptionRecordRenewSerializer
         elif self.action == "attach_addon":
             return AddOnSubscriptionRecordCreateSerializer
         elif self.action == "update_addon":
             return AddOnSubscriptionRecordUpdateSerializer
         elif self.action == "change_prepaid_units":
             return ChangePrepaidUnitsSerializer
+        elif self.action == "features":
+            return FeatureSerializer
+        elif self.action == "calculate_create_cost":
+            return SubscriptionRecordCreateCostSerializer
+        elif self.action == "send_expired_webhook":
+            return EmptySerializer
         else:
             return SubscriptionRecordSerializer
 
@@ -870,7 +1056,7 @@ class SubscriptionViewSet(
         context["organization"] = organization
         if self.action in ["list", "edit", "cancel_multi"]:
             subscription_filters = self.request.query_params.getlist(
-                "subscription_filters[]"
+                "subscription_filters"
             )
             subscription_filters = [json.loads(x) for x in subscription_filters]
             dict_params = self.request.query_params.dict()
@@ -889,14 +1075,18 @@ class SubscriptionViewSet(
                     data=data, context=context
                 )
             elif self.action == "list":
+                dict_params.update({
+                    "subscription_filters": subscription_filters,
+                    "status": self.request.query_params.getlist("status"),
+                })
                 serializer = ListSubscriptionRecordFilter(
-                    data=self.request.query_params, context=context
+                    data=dict_params, context=context
                 )
             else:
                 raise Exception("Invalid action")
             serializer.is_valid(raise_exception=True)
             # unpack whats in the serialized data
-
+            is_cancelled = serializer.validated_data.get("is_cancelled")
             customer = serializer.validated_data.get("customer")
             subscription_filters = serializer.validated_data.get("subscription_filters")
             allowed_status = serializer.validated_data.get(
@@ -907,6 +1097,8 @@ class SubscriptionViewSet(
             plan = serializer.validated_data.get("plan")
             # add onto args
             args = []
+            if is_cancelled is not None:
+                args.append(Q(is_cancelled=is_cancelled))
             if customer:
                 args.append(Q(customer=customer))
             if allowed_status:
@@ -968,11 +1160,20 @@ class SubscriptionViewSet(
                 raise ValidationError(
                     "Invalid subscription filter. Please check your subscription filters setting."
                 )
+        # make sure subscription is available
+        billing_plan = serializer.validated_data["billing_plan"]
+        if billing_plan.max_active_subscriptions is not None:
+            sr_actives = SubscriptionRecord.base_objects.filter(
+                Q(is_cancelled=False),
+                billing_plan=billing_plan,
+            ).count()
+            if sr_actives >= billing_plan.max_active_subscriptions:
+                raise serializers.ValidationError(
+                    "The plan version you are trying to create a subscription to has reached its limit."
+                )
         # check to see if subscription exists
-        duration = serializer.validated_data["billing_plan"].plan.plan_duration
-        start_date = convert_to_datetime(
-            serializer.validated_data["start_date"], date_behavior="min"
-        )
+        duration = billing_plan.plan.plan_duration
+        start_date = serializer.validated_data["start_date"]
         day_anchor = (
             serializer.validated_data["billing_plan"].day_anchor
             or start_date.date().day
@@ -994,16 +1195,70 @@ class SubscriptionViewSet(
             raise ValidationError(
                 "End date cannot be in the past. For historical backfilling of subscriptions, please contact support."
             )
-        subscription_record = serializer.save(
-            organization=organization,
+        sr = serializer.create(serializer.validated_data)
+        srs = SubscriptionRecord.objects.filter(
+            Q(subscription_record_id=sr.subscription_record_id) | Q(parent=sr)
+        ).prefetch_related(
+            "customer",
+            "organization",
+            "billing_plan",
+            "billing_plan__currency",
+            "billing_plan__recurring_charges",
+            "billing_plan__plan_components",
+            "billing_plan__plan_components__billable_metric",
+            "billing_plan__plan_components__tiers",
+            "billing_records",
         )
-
+        generate_invoice(srs, mark_as_paid=serializer.validated_data.get("mark_as_paid", False))
+        subscription_created_webhook(sr)
         # now we can actually create the subscription record
-        response = SubscriptionRecordSerializer(subscription_record).data
+        response = SubscriptionRecordSerializer(sr).data
         return Response(
             response,
             status=status.HTTP_201_CREATED,
         )
+
+    @extend_schema(
+        request=SubscriptionRecordRenewSerializer,
+        parameters=[
+            OpenApiParameter(
+                name="subscription_id",
+                location=OpenApiParameter.PATH,
+                type=OpenApiTypes.STR,
+                description="The ID of the subscription to renew.",
+            )
+        ],
+        responses=SubscriptionRecordSerializer,
+    )
+    @action(detail=True, methods=["post"], url_path="renew", url_name="renew")
+    def renew(self, request, *args, **kwargs):
+        now = now_utc()
+        sr = self.get_object()
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        if sr.is_cancelled or sr.end_date > now:
+            raise ValidationError("Cannot renew subscription which is not expired.")
+        start_date = serializer.validated_data.get("start_date")
+        if start_date:
+            end_date = calculate_end_date(
+                interval=sr.billing_plan.plan.plan_duration,
+                start_date=start_date,
+                timezone=sr.customer.timezone,
+                day_anchor=sr.billing_plan.day_anchor,
+                month_anchor=sr.billing_plan.month_anchor,
+            )
+            if end_date < now:
+                raise ValidationError(
+                    "End date cannot be in the past. For historical back filling of subscriptions, please contact support."
+                )
+        with transaction.atomic():
+            sr_renew = sr.renew_subscription_record(
+                start_date=start_date,
+                mark_as_paid=serializer.validated_data.get("mark_as_paid", False)
+            )
+        ret = SubscriptionRecordSerializer(sr_renew).data
+        subscription_renewed_webhook(sr_renew, ret)
+        return Response(ret, status=status.HTTP_200_OK)
 
     # REGULAR SUBSCRIPTION RECORDS
     @extend_schema(
@@ -1032,6 +1287,7 @@ class SubscriptionViewSet(
         )
 
         ret = SubscriptionRecordSerializer(sr).data
+        subscription_cancelled_webhook(sr, ret)
         return Response(ret, status=status.HTTP_200_OK)
 
     @extend_schema(
@@ -1298,9 +1554,7 @@ class SubscriptionViewSet(
                 )
         # check to see if subscription exists
         duration = serializer.validated_data["billing_plan"].plan.plan_duration
-        start_date = convert_to_datetime(
-            serializer.validated_data["start_date"], date_behavior="min"
-        )
+        start_date = serializer.validated_data["start_date"]
         day_anchor = (
             serializer.validated_data["billing_plan"].day_anchor
             or start_date.date().day
@@ -1550,15 +1804,124 @@ class SubscriptionViewSet(
 
         return response
 
+    @extend_schema(responses={200: FeatureSerializer(many=True)})
+    @action(methods=['get'], detail=True, url_path='features', url_name='features')
+    def features(self, request, *arg, **kwargs):
+        sub = self.get_object()
+        serializers = self.get_serializer(sub.billing_plan.features, many=True)
+
+        return Response(data=serializers.data, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        request=SubscriptionRecordCreateCostSerializer,
+        responses=CalculateCostSerializer
+    )
+    @action(methods=['post'], detail=False, url_path='calculate_create_cost', url_name='calculate_create_cost')
+    def calculate_create_cost(self, request, *args, **kwargs):
+        organization = self.request.organization
+        customer, _ = Customer.objects.get_or_create_default_customer(organization=organization)
+        serializer = self.get_serializer(data={**request.data, 'customer_id': customer.customer_id})
+        serializer.is_valid(raise_exception=True)
+        with transaction.atomic():
+            sr = serializer.create(serializer.validated_data)
+            srs = SubscriptionRecord.objects.filter(
+                Q(subscription_record_id=sr.subscription_record_id) | Q(parent=sr)
+            ).prefetch_related(
+                "customer",
+                "organization",
+                "billing_plan",
+                "billing_plan__currency",
+                "billing_plan__recurring_charges",
+                "billing_plan__plan_components",
+                "billing_plan__plan_components__billable_metric",
+                "billing_plan__plan_components__tiers",
+                "billing_records",
+            )
+            invoices = generate_invoice(srs) or []
+            data = CalculateCostSerializer(invoices[0]).data
+            transaction.set_rollback(True)
+        return Response(data, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="subscription_id",
+                location=OpenApiParameter.PATH,
+                type=OpenApiTypes.STR,
+                description="The ID of the subscription to calculate renew cost.",
+            )
+        ],
+        responses=CalculateCostSerializer
+    )
+    @action(methods=['get'], detail=True, url_path='calculate_renew_cost', url_name='calculate_renew_cost')
+    def calculate_renew_cost(self, request, *args, **kwargs):
+        sr = self.get_object()
+        now = now_utc()
+        with transaction.atomic():
+            # End subscription record if it is active
+            if sr.end_date > now:
+                sr.end_date = now - relativedelta(microseconds=1)
+                sr.addon_subscription_records.update(end_date=now - relativedelta(microseconds=1))
+                sr.save()
+            # Renew it
+            sr_renew = sr.renew_subscription_record(
+                start_date=now_utc(),
+                do_generate_invoice=False
+            )
+            srs = SubscriptionRecord.objects.filter(
+                Q(subscription_record_id=sr_renew.subscription_record_id) | Q(parent=sr_renew)
+            ).prefetch_related(
+                "customer",
+                "organization",
+                "billing_plan",
+                "billing_plan__currency",
+                "billing_plan__recurring_charges",
+                "billing_plan__plan_components",
+                "billing_plan__plan_components__billable_metric",
+                "billing_plan__plan_components__tiers",
+                "billing_records",
+            )
+            invoices = generate_invoice(srs) or []
+            data = CalculateCostSerializer(invoices[0]).data
+            transaction.set_rollback(True)
+        return Response(data, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="subscription_id",
+                location=OpenApiParameter.PATH,
+                type=OpenApiTypes.STR,
+                description="The ID of the subscription expired to send webhook event.",
+            )
+        ],
+        responses={202: SubscriptionExpiredSerializer},
+    )
+    @action(methods=['post'], detail=True, url_path='send_expired_webhook', url_name='send_expired_webhook')
+    def send_expired_webhook(self, request, *arg, **kwargs):
+        subscription_record = self.get_object()
+        now = now_utc()
+        if subscription_record.is_cancelled or subscription_record.end_date > now:
+            raise ValidationError("Cannot send webhook for event subscription expired which is not expired.")
+        response = subscription_expired_webhook(subscription_record)
+        if not hasattr(response, "event_id"):
+            raise response
+        return Response(response.payload, status=status.HTTP_202_ACCEPTED)
+
+
+class InvoiceCursorSetPagination(PageNumberPagination):
+    page_size = 100
+    page_size_query_param = 'page_size'
+    max_page_size = 1000
+
 
 class InvoiceViewSet(PermissionPolicyMixin, viewsets.ModelViewSet):
+    permission_classes = [ValidOrganization]
     serializer_class = InvoiceSerializer
+    pagination_class = InvoiceCursorSetPagination
     http_method_names = ["get", "patch", "head"]
     lookup_field = "invoice_id"
     queryset = Invoice.objects.all()
-    permission_classes_per_method = {
-        "partial_update": [IsAuthenticated & ValidOrganization],
-    }
 
     def get_object(self):
         lookup_field = "invoice_id"
@@ -1587,11 +1950,16 @@ class InvoiceViewSet(PermissionPolicyMixin, viewsets.ModelViewSet):
                 data=self.request.query_params, context=self.get_serializer_context()
             )
             serializer.is_valid(raise_exception=True)
-            args.append(
-                Q(payment_status__in=serializer.validated_data["payment_status"])
-            )
+            issued_after = serializer.validated_data.get("issued_after")
+            payment_status = serializer.validated_data.get("payment_status", [])
+            if len(payment_status) > 0:
+                args.append(
+                    Q(payment_status__in=payment_status)
+                )
             if serializer.validated_data.get("customer"):
                 args.append(Q(customer=serializer.validated_data["customer"]))
+            if issued_after:
+                args.append(Q(issue_date__gt=issued_after))
 
         return Invoice.objects.filter(*args)
 
@@ -1602,7 +1970,7 @@ class InvoiceViewSet(PermissionPolicyMixin, viewsets.ModelViewSet):
             return default
         return InvoiceSerializer
 
-    @extend_schema(request=InvoiceUpdateSerializer, responses=InvoicePaymentSerializer)
+    @extend_schema(request=InvoiceUpdateSerializer, responses=InvoiceSerializer)
     def partial_update(self, request, *args, **kwargs):
         kwargs["partial"] = True
         return self.update(request, *args, **kwargs)
@@ -1676,6 +2044,175 @@ class InvoiceViewSet(PermissionPolicyMixin, viewsets.ModelViewSet):
             {"url": url},
             status=status.HTTP_200_OK,
         )
+
+
+class MetricViewSet(PermissionPolicyMixin, viewsets.ModelViewSet):
+    permission_classes = [ValidOrganization]
+    http_method_names = ["get", "post", "head", "patch"]
+    lookup_field = "metric_id"
+    permission_classes_per_method = {
+        "create": [IsAuthenticated & ValidOrganization],
+        "partial_update": [IsAuthenticated & ValidOrganization],
+    }
+    queryset = Metric.objects.all()
+
+    def get_object(self):
+        string_uuid = self.kwargs[self.lookup_field]
+        uuid = MetricUUIDField().to_internal_value(string_uuid)
+        self.kwargs[self.lookup_field] = uuid
+        return super().get_object()
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        args = [
+            Q(organization=self.request.organization)
+        ]
+        if self.action == "list":
+            data = {
+                "metrics_id": self.request.query_params.getlist("metrics_id", []),
+            }
+            serializer = MetricListFilterSerializer(
+                data=data, context=self.get_serializer_context(),
+            )
+            serializer.is_valid(raise_exception=True)
+            metrics_id_data = serializer.validated_data.get("metrics_id", [])
+            metrics_id = [MetricUUIDField().to_internal_value(metric) for metric in metrics_id_data]
+            if len(metrics_id) > 0:
+                args.append(Q(metric_id__in=metrics_id))
+        else:
+            args.append(Q(status=METRIC_STATUS.ACTIVE))
+        qs = qs.filter(*args)
+        qs = qs.prefetch_related("numeric_filters", "categorical_filters")
+        return qs
+
+    def get_serializer_class(self):
+        if self.action == "partial_update":
+            return MetricUpdateSerializer
+        elif self.action == "create":
+            return MetricCreateSerializer
+        return MetricDetailSerializer
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        organization = self.request.organization
+        context.update({"organization": organization})
+        return context
+
+    def dispatch(self, request, *args, **kwargs):
+        response = super().dispatch(request, *args, **kwargs)
+        if status.is_success(response.status_code):
+            try:
+                username = self.request.user.username
+            except Exception:
+                username = None
+            organization = self.request.organization
+            posthog.capture(
+                POSTHOG_PERSON
+                if POSTHOG_PERSON
+                else (
+                    username
+                    if username
+                    else organization.organization_name + " (API Key)"
+                ),
+                event=f"{self.action}_metric",
+                properties={"organization": organization.organization_name},
+            )
+        return response
+
+    @extend_schema(responses=MetricDetailSerializer)
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        instance = self.perform_create(serializer)
+        metric_data = MetricDetailSerializer(instance).data
+        return Response(metric_data, status=status.HTTP_201_CREATED)
+
+    def perform_create(self, serializer):
+        try:
+            instance = serializer.save(organization=self.request.organization)
+            return instance
+        except IntegrityError as e:
+            cause = e.__cause__
+            if "unique_org_billable_metric_name" in str(cause):
+                error_message = "A billable metric with the same name already exists for this organization. Please choose a different name."
+                raise DuplicateMetric(error_message)
+            elif "uq_metric_w_null__" in str(cause):
+                error_message = "A metric with the same name, type, and other fields already exists for this organization. Please choose a different name or type, or change the other fields."
+                raise DuplicateMetric(error_message)
+            else:
+                raise ServerError(f"Unknown error occurred while creating metric: {e}")
+
+    @extend_schema(
+        parameters=[MetricListFilterSerializer]
+    )
+    def list(self, request):
+        return super().list(request)
+
+
+class CustomPagination(CursorPagination):
+    def get_paginated_response(self, data):
+        if self.get_next_link():
+            next_link = self.get_next_link()
+            next_cursor = next_link[
+                next_link.index(f"{self.cursor_query_param}=")
+                + len(f"{self.cursor_query_param}=") :
+            ]
+        else:
+            next_cursor = None
+        if self.get_previous_link():
+            previous_link = self.get_previous_link()
+            previous_cursor = previous_link[
+                previous_link.index(f"{self.cursor_query_param}=")
+                + len(f"{self.cursor_query_param}=") :
+            ]
+        else:
+            previous_cursor = None
+        return Response(
+            {
+                "next": next_cursor,
+                "previous": previous_cursor,
+                "results": data,
+            }
+        )
+
+
+class CursorSetPagination(CustomPagination):
+    page_size = 10
+    page_size_query_param = "page_size"
+    ordering = "-time_created"
+    cursor_query_param = "c"
+
+
+class EventViewSet(
+    PermissionPolicyMixin, mixins.ListModelMixin, viewsets.GenericViewSet
+):
+    """
+    API endpoint that allows events to be viewed.
+    """
+
+    queryset = Event.objects.all()
+    serializer_class = EventDetailSerializer
+    pagination_class = CursorSetPagination
+    permission_classes = [ValidOrganization]
+    http_method_names = [
+        "get",
+        "head",
+    ]
+
+    def get_queryset(self):
+        now = now_utc()
+        organization = self.request.organization
+        return (
+            super()
+            .get_queryset()
+            .filter(organization=organization, time_created__lt=now)
+        )
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        organization = self.request.organization
+        context.update({"organization": organization})
+        return context
 
 
 class CustomerBalanceAdjustmentViewSet(
@@ -2640,7 +3177,67 @@ class GetCustomerEventAccessView(APIView):
             metrics,
             status=status.HTTP_200_OK,
         )
-        return Response(
-            metrics,
-            status=status.HTTP_200_OK,
-        )
+
+
+class FeatureViewSet(
+    PermissionPolicyMixin,
+    mixins.CreateModelMixin,
+    mixins.ListModelMixin,
+    viewsets.GenericViewSet
+):
+    serializer_class = FeatureSerializer
+    http_method_names = ["get", "post", "head"]
+    permission_classes_per_method = {
+        "create": [ValidOrganization],
+        "destroy": [ValidOrganization],
+    }
+    queryset = Feature.objects.all()
+
+    def get_serializer_class(self):
+        if self.action == "create":
+            return FeatureCreateSerializer
+        return FeatureSerializer
+
+    def get_queryset(self):
+        organization = self.request.organization
+        objs = Feature.objects.filter(organization=organization)
+        return objs
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        organization = self.request.organization
+        context.update({"organization": organization})
+        return context
+
+    def dispatch(self, request, *args, **kwargs):
+        response = super().dispatch(request, *args, **kwargs)
+        if status.is_success(response.status_code):
+            try:
+                username = self.request.user.username
+            except Exception:
+                username = None
+            organization = self.request.organization
+            posthog.capture(
+                POSTHOG_PERSON
+                if POSTHOG_PERSON
+                else (
+                    username
+                    if username
+                    else organization.organization_name + " (API Key)"
+                ),
+                event=f"{self.action}_feature",
+                properties={"organization": organization.organization_name},
+            )
+        return response
+
+    @extend_schema(responses=FeatureSerializer)
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        instance = self.perform_create(serializer)
+        feature_data = FeatureDetailSerializer(instance).data
+        return Response(feature_data, status=status.HTTP_201_CREATED)
+
+    def perform_create(self, serializer):
+        return serializer.save(organization=self.request.organization)
+

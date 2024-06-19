@@ -740,7 +740,7 @@ WITH prev_value AS (
                 {%- if not loop.last %},{% endif %}
                 {%- endfor %}
             )
-        {%- endfor %} 
+        {%- endfor %}
     GROUP BY
         uuidv5_customer_id
         {%- for group_by_field in group_by %}
@@ -768,7 +768,7 @@ WITH prev_value AS (
     ORDER BY
         usage_qty_per_day DESC
 ), top_n AS (
-    SELECT 
+    SELECT
         uuidv5_customer_id
         , SUM(usage_qty_per_day) AS total_usage_qty
     FROM
@@ -779,11 +779,11 @@ WITH prev_value AS (
         total_usage_qty DESC
     LIMIT {{ top_n }}
 )
-SELECT 
+SELECT
     COALESCE(top_n.uuidv5_customer_id, uuid_nil()) AS uuidv5_customer_id
     , SUM(per_customer.usage_qty_per_day) AS usage_qty
     , per_customer.time_bucket AS time_bucket
-FROM 
+FROM
     per_customer
 LEFT JOIN
     top_n
@@ -1168,11 +1168,11 @@ WITH prev_value AS (
             prev => (
                 SELECT COALESCE(
                     (
-                    select 
-                        prev_usage_qty 
-                    from 
-                        prev_value 
-                    where 
+                    select
+                        prev_usage_qty
+                    from
+                        prev_value
+                    where
                         uuidv5_customer_id = {{ cagg_name }}.uuidv5_customer_id
                         {%- for group_by_field in group_by %}
                         AND {{ group_by_field }} = {{ cagg_name }}.{{ group_by_field }}
@@ -1190,7 +1190,7 @@ WITH prev_value AS (
         AND time_bucket >= '{{ start_date }}'::timestamptz
         AND time_bucket <= '{{ end_date }}'::timestamptz
         {% if uuidv5_customer_id is not none %}
-        uuidv5_customer_id = '{{ uuidv5_customer_id }}'
+        AND uuidv5_customer_id = '{{ uuidv5_customer_id }}'
         {%- endif %}
         {%- for property_name, property_values in filter_properties.items() %}
         AND {{ property_name }}
@@ -1228,7 +1228,7 @@ WITH prev_value AS (
     ORDER BY
         usage_qty_per_day DESC
 ), top_n AS (
-    SELECT 
+    SELECT
         uuidv5_customer_id
         , SUM(usage_qty_per_day) AS total_usage_qty
     FROM
@@ -1239,11 +1239,11 @@ WITH prev_value AS (
         total_usage_qty DESC
     LIMIT {{ top_n }}
 )
-SELECT 
+SELECT
     COALESCE(top_n.uuidv5_customer_id, uuid_nil()) AS uuidv5_customer_id
     , SUM(per_customer.usage_qty_per_day) AS usage_qty
     , per_customer.time_bucket AS time_bucket
-FROM 
+FROM
     per_customer
 LEFT JOIN
     top_n

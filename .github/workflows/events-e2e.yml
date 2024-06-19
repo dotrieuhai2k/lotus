@@ -27,7 +27,6 @@ jobs:
       DEBUG: False
       PYTHONDONTWRITEBYTECODE: 1
       SELF_HOSTED: "${{ secrets.SELF_HOSTED }}"
-      DOCKERIZED: True
       POSTGRES_USER: lotus
       POSTGRES_PASSWORD: lotus
       POSTGRES_DB: lotus
