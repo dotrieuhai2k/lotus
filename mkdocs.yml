@@ -1,0 +1,76 @@
+site_name: Lotus Billing Docs
+site_url: https://docs.lotus.io/
+repo_url: https://github.com/uselotus/lotus
+repo_name: uselotus/lotus
+edit_uri: edit/main/docs/
+
+# Cấu hình giao diện (Material Theme)
+theme:
+  name: material
+  language: vi # Giao diện tiếng Việt
+  features:
+    - navigation.tabs # Menu ngang
+    - navigation.sections # Menu con tự mở
+    - navigation.top # Nút "Về đầu trang"
+    - navigation.indexes # Cho phép click vào tên thư mục
+    - search.suggest # Gợi ý khi tìm kiếm
+    - search.highlight # Tô màu từ khóa tìm kiếm
+    - content.code.copy # Nút copy code
+    - content.action.edit # Nút sửa trang trên Github
+  palette: 
+    # Chế độ Sáng (Mặc định)
+    - scheme: default
+      primary: teal
+      accent: purple
+      toggle:
+        icon: material/brightness-7
+        name: Chuyển sang chế độ tối
+    # Chế độ Tối
+    - scheme: slate
+      primary: teal
+      accent: lime
+      toggle:
+        icon: material/brightness-4
+        name: Chuyển sang chế độ sáng
+
+# Cấu hình Markdown (Quan trọng để hiển thị đẹp)
+markdown_extensions:
+  - admonition # Hiển thị khối Note/Warning
+  - pymdownx.details # Hỗ trợ khối đóng/mở (Collapsible)
+  - attr_list # Hỗ trợ thêm class CSS cho ảnh
+  - md_in_html
+  - pymdownx.highlight: # Tô màu Code
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences: # Hỗ trợ Mermaid Diagram
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+# Cấu trúc Menu (Khớp với các folder bạn đã tạo)
+nav:
+  - Trang chủ: index.md
+  - Kiến trúc (Architecture):
+    - Tổng quan: architecture/template-design.md
+    - Thiết kế Database: architecture/database.md
+    - Quyết định (ADR): 
+        - Danh sách ADR: adr/index.md
+        - Template: adr/0000-template.md
+  - Vận hành (Operations):
+    - Runbooks: operations/template-runbook.md
+    - Monitoring: operations/monitoring.md
+  - Phát triển (Development):
+    - Setup: development/template-setup.md
+    - Quy trình: development/workflow.md
+  - API Reference: api/openapi.md
+
+# Plugin bổ sung
+plugins:
+  - search
+
+# Bản quyền chân trang
+copyright: Copyright &copy; 2024 Lotus Billing Team
